@@ -23,6 +23,13 @@ create table staff_users (
   created_at  timestamptz not null default now()
 );
 
+-- Mesma lógica fail-closed da Migration 001: liga RLS e não abre
+-- nenhuma policy de select/insert/update pro authenticated aqui.
+-- Só service_role (dashboard/admin) enxerga essa tabela diretamente;
+-- is_staff() abaixo é security definer, então continua funcionando
+-- normalmente pra qualquer política que dependa dela.
+alter table staff_users enable row level security;
+
 create or replace function is_staff()
 returns boolean
 language sql
