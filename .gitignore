@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+venv/
+.venv/
+env/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Node (Lovable / frontend, se ficar no mesmo repo)
+node_modules/
+dist/
+build/
+
+# Supabase
+.supabase/
+
+# Testes
+.pytest_cache/
+.coverage
+htmlcov/
