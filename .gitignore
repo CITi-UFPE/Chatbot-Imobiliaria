@@ -35,3 +35,6 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Dados sensíveis de clientes — nunca versionar (contratos reais, documentos com PII/LGPD)
+data/
