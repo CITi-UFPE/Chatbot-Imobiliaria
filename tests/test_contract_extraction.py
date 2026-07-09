@@ -42,6 +42,14 @@ def _resposta_com_tool_use(entrada: dict, stop_reason: str = "tool_use"):
     return SimpleNamespace(stop_reason=stop_reason, stop_details=None, content=[bloco])
 
 
+def _mock_stream(resposta):
+    """extrair_dados_contrato usa client.messages.stream(...) como context manager
+    (necessário por causa de MAX_TOKENS=32000); mocka esse contrato."""
+    context_manager = MagicMock()
+    context_manager.__enter__.return_value.get_final_message.return_value = resposta
+    return context_manager
+
+
 class TestExtrairPayload:
     def test_formato_correto_direto(self):
         bruto = _payload_valido()
@@ -63,14 +71,14 @@ class TestExtrairDadosContrato:
     def test_sucesso_primeira_tentativa(self, mock_anthropic_cls, mock_path_cls):
         mock_path_cls.return_value.read_bytes.return_value = b"%PDF-fake"
         mock_client = MagicMock()
-        mock_client.messages.create.return_value = _resposta_com_tool_use(_payload_valido())
+        mock_client.messages.stream.return_value = _mock_stream(_resposta_com_tool_use(_payload_valido()))
         mock_anthropic_cls.return_value = mock_client
 
         resultado = extrair_dados_contrato("qualquer.pdf")
 
         assert resultado.contrato.inquilino_nome == "Fulano de Tal"
         assert len(resultado.clausulas) == 1
-        assert mock_client.messages.create.call_count == 1
+        assert mock_client.messages.stream.call_count == 1
 
     @patch("app.tools.contract_extraction.Path")
     @patch("app.tools.contract_extraction.anthropic.Anthropic")
@@ -79,16 +87,16 @@ class TestExtrairDadosContrato:
         payload_vazio = _payload_valido()
         payload_vazio["clausulas"] = []
         mock_client = MagicMock()
-        mock_client.messages.create.side_effect = [
-            _resposta_com_tool_use(payload_vazio),
-            _resposta_com_tool_use(_payload_valido()),
+        mock_client.messages.stream.side_effect = [
+            _mock_stream(_resposta_com_tool_use(payload_vazio)),
+            _mock_stream(_resposta_com_tool_use(_payload_valido())),
         ]
         mock_anthropic_cls.return_value = mock_client
 
         resultado = extrair_dados_contrato("qualquer.pdf")
 
         assert len(resultado.clausulas) == 1
-        assert mock_client.messages.create.call_count == 2
+        assert mock_client.messages.stream.call_count == 2
 
     @patch("app.tools.contract_extraction.Path")
     @patch("app.tools.contract_extraction.anthropic.Anthropic")
@@ -97,21 +105,21 @@ class TestExtrairDadosContrato:
         payload_vazio = _payload_valido()
         payload_vazio["clausulas"] = []
         mock_client = MagicMock()
-        mock_client.messages.create.return_value = _resposta_com_tool_use(payload_vazio)
+        mock_client.messages.stream.return_value = _mock_stream(_resposta_com_tool_use(payload_vazio))
         mock_anthropic_cls.return_value = mock_client
 
         with pytest.raises(RuntimeError, match="zero cláusulas"):
             extrair_dados_contrato("qualquer.pdf", max_tentativas=2)
 
-        assert mock_client.messages.create.call_count == 2
+        assert mock_client.messages.stream.call_count == 2
 
     @patch("app.tools.contract_extraction.Path")
     @patch("app.tools.contract_extraction.anthropic.Anthropic")
     def test_erro_em_refusal(self, mock_anthropic_cls, mock_path_cls):
         mock_path_cls.return_value.read_bytes.return_value = b"%PDF-fake"
         mock_client = MagicMock()
-        mock_client.messages.create.return_value = SimpleNamespace(
-            stop_reason="refusal", stop_details="motivo x", content=[]
+        mock_client.messages.stream.return_value = _mock_stream(
+            SimpleNamespace(stop_reason="refusal", stop_details="motivo x", content=[])
         )
         mock_anthropic_cls.return_value = mock_client
 
@@ -123,8 +131,8 @@ class TestExtrairDadosContrato:
     def test_erro_sem_tool_use(self, mock_anthropic_cls, mock_path_cls):
         mock_path_cls.return_value.read_bytes.return_value = b"%PDF-fake"
         mock_client = MagicMock()
-        mock_client.messages.create.return_value = SimpleNamespace(
-            stop_reason="end_turn", stop_details=None, content=[]
+        mock_client.messages.stream.return_value = _mock_stream(
+            SimpleNamespace(stop_reason="end_turn", stop_details=None, content=[])
         )
         mock_anthropic_cls.return_value = mock_client
 

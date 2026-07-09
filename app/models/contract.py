@@ -13,6 +13,9 @@ CategoriaClausula = Literal[
     "fiador",
     "rescisao",
     "multa",
+    "prazo_vigencia",
+    "alienacao",
+    "disposicoes_gerais",
 ]
 
 
@@ -39,11 +42,15 @@ class ClausulaExtraida(BaseModel):
             "- agua_energia: consumo e transferência de contas de água e energia elétrica.\n"
             "- fiador: obrigações, renúncias e substituição do fiador.\n"
             "- multa: penalidades por mora (atraso de pagamento) ou por infração contratual.\n"
-            "- rescisao: use para cláusulas sobre rescisão de fato (quebra ou término antecipado "
-            "do contrato por qualquer parte) e também como categoria residual para qualquer "
-            "cláusula que não se encaixe claramente em nenhuma das outras 8 categorias acima "
-            "(ex: objeto do contrato, prazo/duração e prorrogação, alienação do imóvel, "
-            "desapropriação, foro de eleição, disposições/estipulações finais gerais)."
+            "- rescisao: rescisão de fato — quebra ou término antecipado do contrato por "
+            "qualquer parte, incluindo desapropriação e outras causas de extinção do contrato.\n"
+            "- prazo_vigencia: duração do contrato, prorrogação e permanência do locatário no "
+            "imóvel após o término do prazo (holdover).\n"
+            "- alienacao: direito de preferência do locatário e regras aplicáveis caso o "
+            "imóvel seja vendido durante a locação.\n"
+            "- disposicoes_gerais: categoria residual para cláusulas que não se encaixem "
+            "claramente em nenhuma categoria acima (ex: objeto do contrato, foro de eleição, "
+            "forma de citação/notificação, estipulações finais)."
         )
     )
 
@@ -62,12 +69,20 @@ class ContratoExtraido(BaseModel):
         description="Nome do inquilino (ou razão social, se tipo_locatario='pj')."
     )
     inquilino_cpf_cnpj: str = Field(description="CPF do inquilino ou CNPJ da empresa.")
+    locatario_endereco: Optional[str] = Field(
+        default=None,
+        description="Endereço residencial do locatário (não confundir com imovel_endereco, "
+        "que é o endereço do imóvel alugado) — usado para notificação formal.",
+    )
     responsavel_contato_nome: Optional[str] = Field(
         default=None,
         description="Nome do responsável pelo contato, quando o locatário é pessoa jurídica.",
     )
     fiador_nome: Optional[str] = Field(default=None, description="Nome do fiador, se houver.")
     fiador_cpf: Optional[str] = Field(default=None, description="CPF do fiador, se houver.")
+    fiador_endereco: Optional[str] = Field(
+        default=None, description="Endereço residencial do fiador, se houver fiador."
+    )
     garantia_tipo: Literal["fiador", "caucao"] = Field(
         description="Tipo de garantia locatícia usada no contrato."
     )

@@ -11,6 +11,11 @@ load_dotenv()
 
 MODEL = "claude-sonnet-5"
 
+# Contratos PJ com cláusulas de compliance extensas (LGPD, anticorrupção) podem passar de
+# 16000 tokens de saída ao transcrever tudo verbatim — visto na prática com o contrato ARCO,
+# que truncava e resultava em 'clausulas' ausente/vazia (stop_reason='max_tokens').
+MAX_TOKENS = 32000
+
 # Fora do git (coberto pelo mesmo .gitignore de data/) — resultados de extração
 # contêm PII real (CPF, nomes de inquilino/fiador) e não devem ser versionados.
 DIRETORIO_EXTRACOES = Path("data/extracoes")
@@ -25,7 +30,13 @@ SYSTEM_PROMPT = (
     "genéricas ou de baixo impacto, e mesmo que o conteúdo não se encaixe bem em "
     "nenhuma categoria disponível (escolha a categoria mais próxima nesse caso). "
     "Não pule nenhuma cláusula. Transcreva o texto original — não resuma nem "
-    "parafraseie."
+    "parafraseie. Se uma cláusula numerada tiver sub-itens com numeração ou "
+    "lettering próprios (ex: 1.1, 1.2, 1.3 dentro da cláusula 1; ou alíneas a), "
+    "b), c) dentro de uma cláusula), trate CADA sub-item como uma cláusula "
+    "separada na lista, com seu próprio numero_clausula (ex: '1.1', '1.2', ou "
+    "'15.a', '15.b' para alíneas sem numeração própria) e sua própria categoria — "
+    "não agrupe vários sub-itens sob o número da cláusula-mãe, mesmo que "
+    "compartilhem um título ou introdução comuns."
 )
 
 TOOL_NAME = "registrar_dados_contrato"
@@ -60,9 +71,11 @@ def extrair_dados_contrato(
     client = anthropic.Anthropic()
 
     for _ in range(max_tentativas):
-        response = client.messages.create(
+        # MAX_TOKENS=32000 ultrapassa o limite que a SDK aceita em chamada
+        # não-streaming (risco de timeout em requests longas) — precisa streaming.
+        with client.messages.stream(
             model=model,
-            max_tokens=16000,
+            max_tokens=MAX_TOKENS,
             system=SYSTEM_PROMPT,
             tools=[_tool_schema()],
             tool_choice={"type": "tool", "name": TOOL_NAME},
@@ -85,10 +98,19 @@ def extrair_dados_contrato(
                     ],
                 }
             ],
-        )
+        ) as stream:
+            response = stream.get_final_message()
 
         if response.stop_reason == "refusal":
             raise RuntimeError(f"Claude recusou a extração para {caminho_pdf}: {response.stop_details}")
+
+        if response.stop_reason == "max_tokens":
+            raise RuntimeError(
+                f"Resposta truncada por atingir MAX_TOKENS={MAX_TOKENS} para {caminho_pdf} "
+                f"({response.usage.output_tokens} tokens de saída gerados) — contrato provavelmente "
+                "extenso demais para o limite atual. Não adianta tentar de novo sem aumentar "
+                "MAX_TOKENS; o truncamento é determinístico para o mesmo PDF."
+            )
 
         tool_use = next((block for block in response.content if block.type == "tool_use"), None)
         if tool_use is None:

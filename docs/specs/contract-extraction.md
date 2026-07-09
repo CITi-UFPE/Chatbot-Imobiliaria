@@ -1,7 +1,7 @@
 # Extração de dados de contrato (PDF → dados estruturados)
 
-Status: **rascunho v1** — validado em 2 contratos reais (mesmo template), pendente de decisões
-listadas em "Limitações e pendências" antes de considerar isso pronto para os 12 contratos.
+Status: **rascunho v2** — validado em 3 contratos reais (PF+fiador x2, PJ+caução x1), pendente de
+decisões listadas em "Limitações e pendências" antes de considerar isso pronto para os 12 contratos.
 
 ## Objetivo
 
@@ -60,19 +60,32 @@ R$14**, mais margem para retentativas (rate limit ou `clausulas` vazia — ver a
 
 ## Limitações e pendências conhecidas
 
-### 1. Categoria de cláusula como "catch-all" (pendente de decisão)
-O enum `categoria` (9 valores, espelhando o `CHECK constraint` do banco) não tem opção para
-cláusulas de objeto do contrato, prazo/vigência, alienação do imóvel, desapropriação, foro de
-eleição ou disposições finais. Essas caem sistematicamente em `rescisao` (confirmado em 2
-contratos independentes, mesmo padrão). Descrever melhor cada categoria no prompt **não resolveu**
-— só tornou o comportamento mais consistente, não mais preciso. Proposta enviada a quem fez o
-schema: adicionar `prazo_vigencia` e `outros` ao enum (requer migration no Supabase).
+### 1. Categoria de cláusula como "catch-all" — resolvido parcialmente (Migration 003)
+O enum original (9 valores) não tinha opção para cláusulas de objeto do contrato, prazo/vigência,
+alienação do imóvel, desapropriação, foro de eleição ou disposições finais — todas caíam
+sistematicamente em `rescisao` (confirmado em 3 contratos independentes, mesmo padrão). Análise
+completa, com exemplos reais dos 3 contratos, em `docs/specs/categorizacao-clausulas.md`.
+
+Resolvido via `docs/schemas/003_ajusta_categorias_clausulas.sql`: adicionadas `prazo_vigencia`,
+`alienacao` e `disposicoes_gerais` ao `CHECK constraint` de `contract_clauses.categoria`.
+`CategoriaClausula` em `app/models/contract.py` já foi atualizado para bater com as 12 categorias.
+
+**Ainda em aberto**: cláusulas de compliance corporativo (LGPD, Lei Anticorrupção — vistas no
+contrato PJ) não têm categoria própria, caem em `disposicoes_gerais`. E o problema mais estrutural
+identificado na análise — cláusulas numeradas compostas (um único número do contrato cobrindo
+vários assuntos, ex: "Uso do Imóvel" misturando rescisão + sublocação + desapropriação) — não foi
+resolvido por essa migration, porque `categoria` continua sendo um valor único por cláusula. Ver
+"Opções para resolver" em `categorizacao-clausulas.md` para as alternativas discutidas.
 
 ### 2. `telefone_whatsapp` não é extraído
 Coluna `not null` em `contracts`, mas não existe no PDF do contrato — é dado operacional que
 precisa vir de outra fonte (cadastro do inquilino) na hora de gravar no Supabase. Não é um bug de
 prompt/schema; é uma dependência externa que a etapa de persistência (ainda não implementada) vai
 precisar resolver.
+
+`locatario_endereco` e `fiador_endereco` (colunas novas da Migration 003) são diferentes — esses
+**sim** costumam aparecer no PDF (endereço residencial das partes, na qualificação do contrato) e
+já foram adicionados a `ContratoExtraido`. Ainda não testados numa extração real após a mudança.
 
 ### 3. Não-determinismo do modelo
 Observado pelo menos uma vez: mesma chamada (mesmo PDF, mesmo prompt) retornando `clausulas: []`
@@ -87,17 +100,22 @@ tool use estrito ("Schema is too complex"). Sem strict mode, não há garantia s
 resposta bata exatamente com o schema — daí o wrapper `_extrair_payload()` que desembrulha
 qualquer chave extra que a Claude adicione por conta própria.
 
-### 5. Rate limit da conta atual
-A conta usada nos testes está limitada a ~10.000 tokens de entrada/minuto — abaixo até do tier
-"Start" oficial (2.000.000). Uma única chamada (~27.000 tokens) já é maior que esse limite,
-tornando testes em sequência não-confiáveis. Resolver antes de processar os 12 contratos em lote
-(adicionar forma de pagamento em console.anthropic.com/settings/billing deve colocar a conta no
-tier Start automaticamente).
+### 5. Rate limit da conta atual — resolvido
+A conta estava limitada a ~10.000 tokens de entrada/minuto — abaixo até do tier "Start" oficial
+(2.000.000), causando 429 mesmo em chamadas isoladas para o contrato maior (ARCO, ~2,2x o tamanho
+dos outros). Resolvido adicionando forma de pagamento em console.anthropic.com/settings/billing —
+conta migrou para o tier Start automaticamente.
 
-### 6. Cobertura de teste parcial
-Só testamos contratos PF + fiador (2 amostras, mesmo template — "Domingos Monteiro"). Ainda não
-testamos: locatário PJ (`tipo_locatario='pj'`, com `responsavel_contato_nome`), garantia por
-caução (`garantia_tipo='caucao'`, com `garantia_valor`), ou contratos que fujam do template padrão.
+### 6. Cobertura de teste — PJ e caução validados
+Testado com sucesso um 3º contrato: locatário PJ (`tipo_locatario='pj'`, com
+`responsavel_contato_nome` capturado corretamente), garantia por caução (`garantia_tipo='caucao'`,
+`garantia_valor` preenchido, sem exigir fiador). Achado à parte durante esse teste: o comentário
+antigo do schema sobre o ARCO ser "isento de multa moratória" estava incorreto — corrigido na
+Migration 003, mas o valor exato (1% combinado ou 1%+1% empilhado com juros) continua pendente de
+confirmação com o cliente antes de carregar os dados desse contrato específico.
+
+Ainda não testado: contratos fora do template padrão "Domingos Monteiro"/"Golden Beach" (os 3
+testados até agora, apesar de PF/PJ diferentes, usam a mesma estrutura de cláusulas numeradas).
 
 ### 7. Persistência no Supabase — não implementada
 Hoje o script só valida e salva localmente em `data/extracoes/`. Não grava em `contracts` nem
@@ -109,5 +127,6 @@ Essa etapa ainda não existe.
 - Extração completa de cláusulas (após corrigir prompt que estava pulando cláusulas "redundantes")
 - Encoding UTF-8 correto na saída (bug de codepage do Windows corrigido)
 - Validações de negócio via Pydantic (fiador, caução, datas) funcionando como trava antes de
-  qualquer gravação
+  qualquer gravação, incluindo o caso PJ + caução (não exige fiador)
+- Enum de categorias atualizado para as 12 categorias da Migration 003
 - 15 testes unitários cobrindo validadores e lógica de retry/erro (sem custo de API)
