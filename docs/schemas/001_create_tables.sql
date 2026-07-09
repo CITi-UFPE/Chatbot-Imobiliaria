@@ -52,7 +52,15 @@ create table contracts (
   data_aniversario_reajuste   date,                 -- NULL para ARCO (reajuste sem dia fixo)
   multa_infracao_tipo         text not null check (multa_infracao_tipo in ('meses_aluguel', 'percentual_valor_anual')),
   multa_infracao_valor        numeric not null check (multa_infracao_valor > 0), -- 3, 1, ou 10 (%)
-  multa_moratoria_percentual  numeric,              -- NULL para ARCO (isento de multa, só juros)
+  multa_moratoria_percentual  numeric,              -- ATENÇÃO ARCO: cláusula 5.1 do contrato agrupa "juros e
+                                                     -- multa moratória" numa única "base de 1% a.m.", texto
+                                                     -- ambíguo (pode ser 1% combinado ou 1%+1% empilhado com
+                                                     -- juros_moratorio_mensal). Comentário anterior aqui dizia
+                                                     -- "NULL, isento de multa" — isso estava ERRADO (cláusula
+                                                     -- 14.1 chama expressamente o item 5.1 de "a multa
+                                                     -- moratória"). PENDENTE confirmação com o Domingos antes
+                                                     -- de carregar os dados do ARCO — ver comentário de coluna
+                                                     -- (migration 003) e docs/schemas/README.md.
   juros_moratorio_mensal      numeric not null default 0.01,
   aviso_previo_dias           integer not null,
   aviso_previo_a_partir_mes   integer not null,
