@@ -1,12 +1,7 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
-import {
-  CalendarClock,
-  TrendingUp,
-  Sparkles,
-  Wrench,
-  Gift,
-} from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CalendarClock, TrendingUp, Sparkles, Wrench, Gift } from "lucide-react";
 import { PageHeader } from "./PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,20 +10,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
+import { supabase } from "@/lib/supabase";
+
+const CONTRATOS_ATIVOS_KEY = ["contratos-ativos-reajuste"] as const;
+const REAJUSTES_ANIVERSARIO_KEY = ["contract-alerts-reajuste"] as const;
+const RENOVACOES_KEY = ["contract-alerts-renovacao"] as const;
 
 type Decisao = "" | "sugerido" | "manual" | "encerrar";
 
-interface Contrato {
-  id: string;
-  inquilino: string;
-  aniversario: string;
-  valorAtual: number;
-  reajuste: number; // %
-  janela: "D-60 Renovação" | "D-30 Reajuste";
-  decisao: Decisao;
-  valorManual: string;
-  status: "pendente" | "renovado" | "encerrado";
-}
+const brl = (v: number) => `R$ ${v.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
+
+/* ============================================================
+ * Dados: contratos ativos (pra reajuste manual, sem vínculo com alerta)
+ * ============================================================ */
 
 interface ContratoAtivo {
   id: string;
@@ -37,135 +31,103 @@ interface ContratoAtivo {
   valorAtual: number;
 }
 
-interface Aniversario {
-  id: string;
-  inquilino: string;
-  aniversario: string;
-  diasRestantes: number;
-  valorAtual: number;
-  taxa: number; // %
-  aplicado: boolean;
-  modo: "sugerido" | "manual";
-  valorManual: string;
+async function fetchContratosAtivos(): Promise<ContratoAtivo[]> {
+  const { data, error } = await supabase
+    .from("contracts")
+    .select("id, inquilino_nome, imovel_endereco, valor_aluguel")
+    .eq("status", "ativo")
+    .order("inquilino_nome");
+  if (error) throw error;
+  return (data ?? []).map((c) => ({
+    id: c.id,
+    inquilino: c.inquilino_nome,
+    imovel: c.imovel_endereco,
+    valorAtual: Number(c.valor_aluguel),
+  }));
 }
 
-const contratosAtivosIniciais: ContratoAtivo[] = [
-  {
-    id: "c1",
-    inquilino: "Ana Beatriz Souza",
-    imovel: "Apt. 302 — Ed. Aurora",
-    valorAtual: 2500,
-  },
-  {
-    id: "c2",
-    inquilino: "Construtora Marca Ltda.",
-    imovel: "Sala 12 — Centro Empresarial",
-    valorAtual: 4200,
-  },
-  {
-    id: "c3",
-    inquilino: "João Pedro Almeida",
-    imovel: "Casa 05 — Vila Nova",
-    valorAtual: 2100,
-  },
-  {
-    id: "c4",
-    inquilino: "Marcela Ribeiro",
-    imovel: "Apt. 101 — Ed. Jardim",
-    valorAtual: 1850,
-  },
-];
+/* ============================================================
+ * Dados: contract_alerts (reajuste de aniversário e renovação)
+ * ============================================================ */
 
-const aniversariosIniciais: Aniversario[] = [
-  {
-    id: "a1",
-    inquilino: "Carlos Menezes",
-    aniversario: "07/08/2026",
-    diasRestantes: 30,
-    valorAtual: 3200,
-    taxa: 5.4,
-    aplicado: false,
-    modo: "sugerido",
-    valorManual: "",
-  },
-  {
-    id: "a2",
-    inquilino: "Fernanda Lopes",
-    aniversario: "18/08/2026",
-    diasRestantes: 21,
-    valorAtual: 1900,
-    taxa: 4.7,
-    aplicado: false,
-    modo: "sugerido",
-    valorManual: "",
-  },
-];
+interface AlertaComContrato {
+  alertId: string;
+  contractId: string;
+  inquilino: string;
+  valorAtual: number;
+  dataDisparo: string;
+  percentualReajuste: number | null;
+  valorSugerido: number | null;
+}
 
-const iniciais: Contrato[] = [
-  {
-    id: "r1",
-    inquilino: "Ana Beatriz Souza",
-    aniversario: "05/09/2026",
-    valorAtual: 2500,
-    reajuste: 4.8,
-    janela: "D-60 Renovação",
-    decisao: "",
-    valorManual: "",
-    status: "pendente",
-  },
-  {
-    id: "r2",
-    inquilino: "Construtora Marca Ltda.",
-    aniversario: "12/08/2026",
-    valorAtual: 4200,
-    reajuste: 6.2,
-    janela: "D-30 Reajuste",
-    decisao: "",
-    valorManual: "",
-    status: "pendente",
-  },
-  {
-    id: "r3",
-    inquilino: "João Pedro Almeida",
-    aniversario: "20/09/2026",
-    valorAtual: 2100,
-    reajuste: 5.1,
-    janela: "D-60 Renovação",
-    decisao: "",
-    valorManual: "",
-    status: "pendente",
-  },
-];
+async function fetchAlertas(tipo: "calculo_reajuste_d30" | "alerta_renovacao_d60"): Promise<AlertaComContrato[]> {
+  // "contracts!inner" (em vez do embed padrão) é necessário pra poder filtrar
+  // por contracts.status abaixo — sem o !inner, o filtro no relacionamento é
+  // ignorado pelo PostgREST e alertas de contratos já inativos continuam
+  // aparecendo na lista (era exatamente o bug: contrato desativado ainda
+  // mostrava reajuste/renovação pendente).
+  const { data, error } = await supabase
+    .from("contract_alerts")
+    .select(
+      "id, contract_id, data_disparo, percentual_reajuste, valor_sugerido, decisao_gestora, contracts!inner(inquilino_nome, valor_aluguel, status)",
+    )
+    .eq("tipo", tipo)
+    .or("decisao_gestora.is.null,decisao_gestora.eq.pendente")
+    .eq("contracts.status", "ativo")
+    .order("data_disparo");
+  if (error) throw error;
 
-const brl = (v: number) =>
-  `R$ ${v.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
+  return (data ?? []).map((row: any) => ({
+    alertId: row.id,
+    contractId: row.contract_id,
+    inquilino: row.contracts?.inquilino_nome ?? "—",
+    valorAtual: Number(row.contracts?.valor_aluguel ?? 0),
+    dataDisparo: row.data_disparo,
+    percentualReajuste: row.percentual_reajuste != null ? Number(row.percentual_reajuste) : null,
+    valorSugerido: row.valor_sugerido != null ? Number(row.valor_sugerido) : null,
+  }));
+}
 
-/* -------------------- Seção 1: Reajustes Manuais -------------------- */
+function diasRestantes(dataDisparo: string): number {
+  const diff = new Date(dataDisparo).getTime() - Date.now();
+  return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+}
 
-function ReajustesManuaisSection({
-  contratos,
-  onReajustar,
-}: {
-  contratos: ContratoAtivo[];
-  onReajustar: (id: string, novoValor: number) => void;
-}) {
+/* ============================================================
+ * Seção 1: Reajustes manuais — edita contracts.valor_aluguel direto,
+ * sem depender de nenhum alerta ter sido disparado.
+ * ============================================================ */
+
+function ReajustesManuaisSection() {
+  const queryClient = useQueryClient();
+  const { data: contratos = [], isLoading } = useQuery({
+    queryKey: CONTRATOS_ATIVOS_KEY,
+    queryFn: fetchContratosAtivos,
+  });
   const [inputs, setInputs] = useState<Record<string, string>>({});
 
-  const setInput = (id: string, v: string) =>
-    setInputs((prev) => ({ ...prev, [id]: v }));
+  const aplicarMutation = useMutation({
+    mutationFn: async (c: ContratoAtivo) => {
+      const raw = (inputs[c.id] ?? "").replace(",", ".");
+      const novo = parseFloat(raw);
+      if (!Number.isFinite(novo) || novo <= 0) throw new Error("Informe um valor válido");
 
-  const aplicar = (c: ContratoAtivo) => {
-    const raw = (inputs[c.id] ?? "").replace(",", ".");
-    const novo = parseFloat(raw);
-    if (!Number.isFinite(novo) || novo <= 0) {
-      return toast.error("Informe um valor válido");
-    }
-    onReajustar(c.id, novo);
-    setInput(c.id, "");
-    toast.success("Reajuste manual aplicado", {
-      description: `${c.inquilino}: ${brl(c.valorAtual)} → ${brl(novo)}`,
-    });
-  };
+      const { error } = await supabase
+        .from("contracts")
+        .update({ valor_aluguel: novo })
+        .eq("id", c.id);
+      if (error) throw error;
+      return novo;
+    },
+    onSuccess: (novo, c) => {
+      setInputs((prev) => ({ ...prev, [c.id]: "" }));
+      toast.success("Reajuste manual aplicado", {
+        description: `${c.inquilino}: ${brl(c.valorAtual)} → ${brl(novo)}`,
+      });
+      queryClient.invalidateQueries({ queryKey: CONTRATOS_ATIVOS_KEY });
+    },
+    onError: (error: Error) => toast.error(error.message || "Não foi possível aplicar o reajuste"),
+  });
 
   return (
     <section>
@@ -178,7 +140,9 @@ function ReajustesManuaisSection({
         reflete automaticamente contratos adicionados ou removidos.
       </p>
 
-      {contratos.length === 0 ? (
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Carregando...</p>
+      ) : contratos.length === 0 ? (
         <Card>
           <CardContent className="p-6 text-sm text-muted-foreground">
             Nenhum contrato ativo no momento.
@@ -192,18 +156,14 @@ function ReajustesManuaisSection({
                 <div className="flex items-start justify-between">
                   <div>
                     <CardTitle className="text-base">{c.inquilino}</CardTitle>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {c.imovel}
-                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{c.imovel}</p>
                   </div>
                   <Badge variant="secondary">Ativo</Badge>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="rounded-lg bg-muted/30 p-3">
-                  <div className="text-xs uppercase text-muted-foreground">
-                    Valor atual
-                  </div>
+                  <div className="text-xs uppercase text-muted-foreground">Valor atual</div>
                   <div className="font-semibold">{brl(c.valorAtual)}</div>
                 </div>
                 <div className="space-y-1.5">
@@ -214,9 +174,14 @@ function ReajustesManuaisSection({
                       type="number"
                       placeholder="0,00"
                       value={inputs[c.id] ?? ""}
-                      onChange={(e) => setInput(c.id, e.target.value)}
+                      onChange={(e) => setInputs((prev) => ({ ...prev, [c.id]: e.target.value }))}
                     />
-                    <Button onClick={() => aplicar(c)}>Aplicar</Button>
+                    <Button
+                      onClick={() => aplicarMutation.mutate(c)}
+                      disabled={aplicarMutation.isPending && aplicarMutation.variables?.id === c.id}
+                    >
+                      Aplicar
+                    </Button>
                   </div>
                 </div>
               </CardContent>
@@ -228,18 +193,56 @@ function ReajustesManuaisSection({
   );
 }
 
-/* -------------------- Seção 2: Reajustes de Aniversário -------------------- */
+/* ============================================================
+ * Seção 2: Reajustes de aniversário — contract_alerts
+ * tipo='calculo_reajuste_d30', pendentes de decisão.
+ * ============================================================ */
 
-function ReajustesAniversarioSection({
-  items,
-  onUpdate,
-  onAplicar,
-}: {
-  items: Aniversario[];
-  onUpdate: (id: string, patch: Partial<Aniversario>) => void;
-  onAplicar: (a: Aniversario) => void;
-}) {
-  const pendentes = items.filter((a) => !a.aplicado);
+function ReajustesAniversarioSection() {
+  const queryClient = useQueryClient();
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: REAJUSTES_ANIVERSARIO_KEY,
+    queryFn: () => fetchAlertas("calculo_reajuste_d30"),
+  });
+  const [modos, setModos] = useState<Record<string, "sugerido" | "manual">>({});
+  const [manuais, setManuais] = useState<Record<string, string>>({});
+
+  const aplicarMutation = useMutation({
+    mutationFn: async (a: AlertaComContrato) => {
+      const modo = modos[a.alertId] ?? "sugerido";
+      const sugerido =
+        a.valorSugerido ?? a.valorAtual * (1 + (a.percentualReajuste ?? 0) / 100);
+      const novo =
+        modo === "sugerido" ? sugerido : parseFloat((manuais[a.alertId] ?? "").replace(",", "."));
+
+      if (!Number.isFinite(novo) || novo <= 0) throw new Error("Informe um valor válido");
+
+      const { error: alertError } = await supabase
+        .from("contract_alerts")
+        .update({
+          decisao_gestora: modo === "sugerido" ? "renovar_sugerido" : "renovar_ajustado",
+          valor_aplicado: novo,
+        })
+        .eq("id", a.alertId);
+      if (alertError) throw alertError;
+
+      const { error: contractError } = await supabase
+        .from("contracts")
+        .update({ valor_aluguel: novo })
+        .eq("id", a.contractId);
+      if (contractError) throw contractError;
+
+      return novo;
+    },
+    onSuccess: (novo, a) => {
+      toast.success("Reajuste de aniversário aplicado", {
+        description: `${a.inquilino}: ${brl(a.valorAtual)} → ${brl(novo)}`,
+      });
+      queryClient.invalidateQueries({ queryKey: REAJUSTES_ANIVERSARIO_KEY });
+      queryClient.invalidateQueries({ queryKey: CONTRATOS_ATIVOS_KEY });
+    },
+    onError: (error: Error) => toast.error(error.message || "Não foi possível aplicar o reajuste"),
+  });
 
   return (
     <section>
@@ -252,7 +255,9 @@ function ReajustesAniversarioSection({
         30 dias do aniversário do contrato. Após aplicada, a mudança some desta lista.
       </p>
 
-      {pendentes.length === 0 ? (
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Carregando...</p>
+      ) : items.length === 0 ? (
         <Card>
           <CardContent className="p-6 text-sm text-muted-foreground">
             Nenhum reajuste de aniversário pendente.
@@ -260,11 +265,16 @@ function ReajustesAniversarioSection({
         </Card>
       ) : (
         <div className="grid gap-4">
-          {pendentes.map((a) => {
-            const sugerido = a.valorAtual * (1 + a.taxa / 100);
-            const manualNum = parseFloat(a.valorManual.replace(",", "."));
+          {items.map((a) => {
+            const sugerido =
+              a.valorSugerido ?? a.valorAtual * (1 + (a.percentualReajuste ?? 0) / 100);
+            const modo = modos[a.alertId] ?? "sugerido";
+            const manualNum = parseFloat((manuais[a.alertId] ?? "").replace(",", "."));
+            const dias = diasRestantes(a.dataDisparo);
+            const isPending =
+              aplicarMutation.isPending && aplicarMutation.variables?.alertId === a.alertId;
             return (
-              <Card key={a.id}>
+              <Card key={a.alertId}>
                 <CardHeader className="flex flex-row items-start justify-between space-y-0">
                   <div className="flex items-center gap-3">
                     <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -273,69 +283,59 @@ function ReajustesAniversarioSection({
                     <div>
                       <CardTitle className="text-base">{a.inquilino}</CardTitle>
                       <p className="text-xs text-muted-foreground">
-                        Aniversário: {a.aniversario}
+                        Aniversário: {new Date(a.dataDisparo).toLocaleDateString("pt-BR")}
                       </p>
                     </div>
                   </div>
                   <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">
-                    Faltam {a.diasRestantes} {a.diasRestantes === 1 ? "dia" : "dias"}
+                    Faltam {dias} {dias === 1 ? "dia" : "dias"}
                   </Badge>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm bg-muted/30 rounded-lg p-4">
                     <div>
-                      <div className="text-xs uppercase text-muted-foreground">
-                        Valor atual
-                      </div>
+                      <div className="text-xs uppercase text-muted-foreground">Valor atual</div>
                       <div className="font-semibold">{brl(a.valorAtual)}</div>
                     </div>
                     <div>
-                      <div className="text-xs uppercase text-muted-foreground">
-                        Taxa do contrato
-                      </div>
+                      <div className="text-xs uppercase text-muted-foreground">Taxa do contrato</div>
                       <div className="font-semibold flex items-center gap-1 text-emerald-700">
                         <TrendingUp className="h-3.5 w-3.5" />
-                        {a.taxa.toFixed(2)}%
+                        {(a.percentualReajuste ?? 0).toFixed(2)}%
                       </div>
                     </div>
                     <div>
-                      <div className="text-xs uppercase text-muted-foreground">
-                        Valor sugerido
-                      </div>
-                      <div className="font-semibold text-primary">
-                        {brl(sugerido)}
-                      </div>
+                      <div className="text-xs uppercase text-muted-foreground">Valor sugerido</div>
+                      <div className="font-semibold text-primary">{brl(sugerido)}</div>
                     </div>
                   </div>
 
                   <RadioGroup
-                    value={a.modo}
+                    value={modo}
                     onValueChange={(v) =>
-                      onUpdate(a.id, { modo: v as "sugerido" | "manual" })
+                      setModos((prev) => ({ ...prev, [a.alertId]: v as "sugerido" | "manual" }))
                     }
                     className="grid gap-2"
                   >
                     <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
-                      <RadioGroupItem value="sugerido" id={`${a.id}-s`} />
-                      <span className="text-sm">
-                        Aceitar valor sugerido ({brl(sugerido)})
-                      </span>
+                      <RadioGroupItem value="sugerido" id={`${a.alertId}-s`} />
+                      <span className="text-sm">Aceitar valor sugerido ({brl(sugerido)})</span>
                     </label>
                     <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
-                      <RadioGroupItem value="manual" id={`${a.id}-m`} />
+                      <RadioGroupItem value="manual" id={`${a.alertId}-m`} />
                       <span className="text-sm">Alterar manualmente</span>
                     </label>
                   </RadioGroup>
 
-                  {a.modo === "manual" && (
+                  {modo === "manual" && (
                     <div className="space-y-1.5">
                       <Label>Novo valor (R$)</Label>
                       <Input
                         type="number"
                         placeholder="0,00"
-                        value={a.valorManual}
+                        value={manuais[a.alertId] ?? ""}
                         onChange={(e) =>
-                          onUpdate(a.id, { valorManual: e.target.value })
+                          setManuais((prev) => ({ ...prev, [a.alertId]: e.target.value }))
                         }
                         className="max-w-xs"
                       />
@@ -344,10 +344,9 @@ function ReajustesAniversarioSection({
 
                   <div className="flex justify-end">
                     <Button
-                      onClick={() => onAplicar(a)}
+                      onClick={() => aplicarMutation.mutate(a)}
                       disabled={
-                        a.modo === "manual" &&
-                        (!Number.isFinite(manualNum) || manualNum <= 0)
+                        isPending || (modo === "manual" && (!Number.isFinite(manualNum) || manualNum <= 0))
                       }
                     >
                       Aplicar reajuste
@@ -363,81 +362,207 @@ function ReajustesAniversarioSection({
   );
 }
 
-/* -------------------- Seção 3: Renovações (existente) -------------------- */
+/* ============================================================
+ * Seção 3: Renovação — contract_alerts tipo='alerta_renovacao_d60',
+ * pendentes de decisão.
+ * ============================================================ */
+
+function RenovacaoSection() {
+  const queryClient = useQueryClient();
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: RENOVACOES_KEY,
+    queryFn: () => fetchAlertas("alerta_renovacao_d60"),
+  });
+  const [decisoes, setDecisoes] = useState<Record<string, Decisao>>({});
+  const [manuais, setManuais] = useState<Record<string, string>>({});
+
+  const confirmarMutation = useMutation({
+    mutationFn: async (a: AlertaComContrato) => {
+      const decisao = decisoes[a.alertId] ?? "";
+      if (!decisao) throw new Error("Selecione uma decisão");
+
+      if (decisao === "encerrar") {
+        const { error: alertError } = await supabase
+          .from("contract_alerts")
+          .update({ decisao_gestora: "encerrar" })
+          .eq("id", a.alertId);
+        if (alertError) throw alertError;
+
+        const { error: contractError } = await supabase
+          .from("contracts")
+          .update({ status: "inativo" })
+          .eq("id", a.contractId);
+        if (contractError) throw contractError;
+
+        return { novo: null as number | null, decisao };
+      }
+
+      const sugerido = a.valorSugerido ?? a.valorAtual * (1 + (a.percentualReajuste ?? 0) / 100);
+      const novo =
+        decisao === "sugerido" ? sugerido : parseFloat((manuais[a.alertId] ?? "").replace(",", "."));
+
+      if (decisao === "manual" && (!Number.isFinite(novo) || novo <= 0)) {
+        throw new Error("Informe um valor manual válido");
+      }
+
+      const { error: alertError } = await supabase
+        .from("contract_alerts")
+        .update({
+          decisao_gestora: decisao === "sugerido" ? "renovar_sugerido" : "renovar_ajustado",
+          valor_aplicado: novo,
+        })
+        .eq("id", a.alertId);
+      if (alertError) throw alertError;
+
+      const { error: contractError } = await supabase
+        .from("contracts")
+        .update({ valor_aluguel: novo })
+        .eq("id", a.contractId);
+      if (contractError) throw contractError;
+
+      return { novo, decisao };
+    },
+    onSuccess: ({ novo, decisao }, a) => {
+      if (decisao === "encerrar") {
+        toast.success("Contrato encerrado", {
+          description: `Fluxo de desativação iniciado para ${a.inquilino}.`,
+        });
+      } else {
+        toast.success("Renovação confirmada", {
+          description: `Valor atualizado para ${brl(novo!)} no próximo ciclo.`,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: RENOVACOES_KEY });
+      queryClient.invalidateQueries({ queryKey: CONTRATOS_ATIVOS_KEY });
+    },
+    onError: (error: Error) => toast.error(error.message || "Não foi possível confirmar a decisão"),
+  });
+
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-3">
+        <CalendarClock className="h-4 w-4 text-primary" />
+        <h2 className="text-lg font-semibold">Renovação</h2>
+      </div>
+      <p className="text-sm text-muted-foreground mb-4">
+        Contratos em janela de alerta (D-60 antes do término). Registre a decisão
+        administrativa — o valor é atualizado no contrato existente.
+      </p>
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Carregando...</p>
+      ) : items.length === 0 ? (
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground">
+            Nenhum contrato em janela de renovação no momento.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid gap-4">
+          {items.map((a) => {
+            const sugerido = a.valorSugerido ?? a.valorAtual * (1 + (a.percentualReajuste ?? 0) / 100);
+            const decisao = decisoes[a.alertId] ?? "";
+            const isPending =
+              confirmarMutation.isPending && confirmarMutation.variables?.alertId === a.alertId;
+
+            return (
+              <Card key={a.alertId}>
+                <CardHeader className="flex flex-row items-start justify-between space-y-0">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                      <CalendarClock className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-base">{a.inquilino}</CardTitle>
+                      <p className="text-xs text-muted-foreground">
+                        Término: {new Date(a.dataDisparo).toLocaleDateString("pt-BR")}
+                      </p>
+                    </div>
+                  </div>
+                  <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">D-60 Renovação</Badge>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm bg-muted/30 rounded-lg p-4">
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Valor Atual</div>
+                      <div className="font-semibold">{brl(a.valorAtual)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Reajuste</div>
+                      <div className="font-semibold flex items-center gap-1 text-emerald-700">
+                        <TrendingUp className="h-3.5 w-3.5" />
+                        {(a.percentualReajuste ?? 0).toFixed(2)}%
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase text-muted-foreground">Valor Sugerido</div>
+                      <div className="font-semibold text-primary">{brl(sugerido)}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <Label>Decisão</Label>
+                    <RadioGroup
+                      value={decisao}
+                      onValueChange={(v) =>
+                        setDecisoes((prev) => ({ ...prev, [a.alertId]: v as Decisao }))
+                      }
+                      className="grid gap-2"
+                    >
+                      <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
+                        <RadioGroupItem value="sugerido" id={`${a.alertId}-s`} />
+                        <span className="text-sm">Renovar com valor sugerido ({brl(sugerido)})</span>
+                      </label>
+                      <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
+                        <RadioGroupItem value="manual" id={`${a.alertId}-m`} />
+                        <span className="text-sm">Renovar com valor ajustado manualmente</span>
+                      </label>
+                      <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
+                        <RadioGroupItem value="encerrar" id={`${a.alertId}-e`} />
+                        <span className="text-sm">Encerrar contrato</span>
+                      </label>
+                    </RadioGroup>
+
+                    {decisao === "manual" && (
+                      <div className="space-y-1.5">
+                        <Label>Novo valor (R$)</Label>
+                        <Input
+                          type="number"
+                          placeholder="0,00"
+                          value={manuais[a.alertId] ?? ""}
+                          onChange={(e) =>
+                            setManuais((prev) => ({ ...prev, [a.alertId]: e.target.value }))
+                          }
+                          className="max-w-xs"
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex justify-end">
+                      <Button
+                        onClick={() => confirmarMutation.mutate(a)}
+                        disabled={isPending}
+                        variant={decisao === "encerrar" ? "destructive" : "default"}
+                      >
+                        {decisao === "encerrar" ? "Confirmar Encerramento" : "Confirmar Renovação"}
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ============================================================
+ * Componente exportado
+ * ============================================================ */
 
 export function RenovacoesSection() {
-  const [items, setItems] = useState(iniciais);
-  const [contratosAtivos, setContratosAtivos] = useState(contratosAtivosIniciais);
-  const [aniversarios, setAniversarios] = useState(aniversariosIniciais);
-
-  const update = (id: string, patch: Partial<Contrato>) =>
-    setItems((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
-
-  const updateAniv = (id: string, patch: Partial<Aniversario>) =>
-    setAniversarios((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, ...patch } : a)),
-    );
-
-  const aplicarAniversario = (a: Aniversario) => {
-    const sugerido = a.valorAtual * (1 + a.taxa / 100);
-    const novo =
-      a.modo === "sugerido"
-        ? sugerido
-        : parseFloat(a.valorManual.replace(",", "."));
-
-    if (!Number.isFinite(novo) || novo <= 0) {
-      return toast.error("Informe um valor válido");
-    }
-
-    setContratosAtivos((prev) =>
-      prev.map((c) =>
-        c.inquilino === a.inquilino ? { ...c, valorAtual: novo } : c,
-      ),
-    );
-    updateAniv(a.id, { aplicado: true });
-    toast.success("Reajuste de aniversário aplicado", {
-      description: `${a.inquilino}: ${brl(a.valorAtual)} → ${brl(novo)}`,
-    });
-  };
-
-  const reajustarManual = (id: string, novo: number) => {
-    setContratosAtivos((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, valorAtual: novo } : c)),
-    );
-  };
-
-  const confirmar = (c: Contrato) => {
-    if (!c.decisao) return toast.error("Selecione uma decisão");
-
-    if (c.decisao === "encerrar") {
-      update(c.id, { status: "encerrado", valorAtual: c.valorAtual });
-      toast.success("Contrato encerrado", {
-        description: `Fluxo de desativação iniciado para ${c.inquilino}.`,
-      });
-      return;
-    }
-
-    const sugerido = c.valorAtual * (1 + c.reajuste / 100);
-    const novoValor =
-      c.decisao === "sugerido"
-        ? sugerido
-        : parseFloat(c.valorManual.replace(",", "."));
-
-    if (c.decisao === "manual" && (!Number.isFinite(novoValor) || novoValor <= 0)) {
-      return toast.error("Informe um valor manual válido");
-    }
-
-    update(c.id, { status: "renovado", valorAtual: novoValor });
-    toast.success("Renovação confirmada", {
-      description: `Valor atualizado para ${brl(novoValor)} no próximo ciclo.`,
-    });
-  };
-
-  const contratosOrdenados = useMemo(
-    () => [...contratosAtivos].sort((a, b) => a.inquilino.localeCompare(b.inquilino)),
-    [contratosAtivos],
-  );
-
   return (
     <div className="space-y-10">
       <PageHeader
@@ -445,158 +570,11 @@ export function RenovacoesSection() {
         description="Reajustes manuais a qualquer momento, reajustes automáticos de aniversário e renovações em janela de alerta — tudo em um único painel."
       />
 
-      <ReajustesManuaisSection
-        contratos={contratosOrdenados}
-        onReajustar={reajustarManual}
-      />
-
+      <ReajustesManuaisSection />
       <Separator />
-
-      <ReajustesAniversarioSection
-        items={aniversarios}
-        onUpdate={updateAniv}
-        onAplicar={aplicarAniversario}
-      />
-
+      <ReajustesAniversarioSection />
       <Separator />
-
-      <section>
-        <div className="flex items-center gap-2 mb-3">
-          <CalendarClock className="h-4 w-4 text-primary" />
-          <h2 className="text-lg font-semibold">Renovação</h2>
-        </div>
-        <p className="text-sm text-muted-foreground mb-4">
-          Contratos em janela de alerta (D-60 renovação, D-30 reajuste). Registre a
-          decisão administrativa — o valor é atualizado no contrato existente.
-        </p>
-
-        <div className="grid gap-4">
-          {items.map((c) => {
-            const sugerido = c.valorAtual * (1 + c.reajuste / 100);
-            const encerrado = c.status === "encerrado";
-            const renovado = c.status === "renovado";
-            const done = encerrado || renovado;
-
-            return (
-              <Card key={c.id}>
-                <CardHeader className="flex flex-row items-start justify-between space-y-0">
-                  <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <CalendarClock className="h-5 w-5 text-primary" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">{c.inquilino}</CardTitle>
-                      <p className="text-xs text-muted-foreground">
-                        Aniversário: {c.aniversario}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-end gap-1">
-                    <Badge
-                      className={
-                        c.janela === "D-60 Renovação"
-                          ? "bg-blue-100 text-blue-700 hover:bg-blue-100"
-                          : "bg-amber-100 text-amber-700 hover:bg-amber-100"
-                      }
-                    >
-                      {c.janela}
-                    </Badge>
-                    {renovado && (
-                      <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
-                        Renovado
-                      </Badge>
-                    )}
-                    {encerrado && <Badge variant="destructive">Encerrado</Badge>}
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-5">
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm bg-muted/30 rounded-lg p-4">
-                    <div>
-                      <div className="text-xs uppercase text-muted-foreground">
-                        Valor Atual
-                      </div>
-                      <div className="font-semibold">{brl(c.valorAtual)}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs uppercase text-muted-foreground">
-                        Reajuste
-                      </div>
-                      <div className="font-semibold flex items-center gap-1 text-emerald-700">
-                        <TrendingUp className="h-3.5 w-3.5" />
-                        {c.reajuste.toFixed(2)}%
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs uppercase text-muted-foreground">
-                        Valor Sugerido
-                      </div>
-                      <div className="font-semibold text-primary">
-                        {brl(sugerido)}
-                      </div>
-                    </div>
-                  </div>
-
-                  {!done && (
-                    <div className="space-y-4">
-                      <Label>Decisão</Label>
-                      <RadioGroup
-                        value={c.decisao}
-                        onValueChange={(v) => update(c.id, { decisao: v as Decisao })}
-                        className="grid gap-2"
-                      >
-                        <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
-                          <RadioGroupItem value="sugerido" id={`${c.id}-s`} />
-                          <span className="text-sm">
-                            Renovar com valor sugerido ({brl(sugerido)})
-                          </span>
-                        </label>
-                        <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
-                          <RadioGroupItem value="manual" id={`${c.id}-m`} />
-                          <span className="text-sm">
-                            Renovar com valor ajustado manualmente
-                          </span>
-                        </label>
-                        <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
-                          <RadioGroupItem value="encerrar" id={`${c.id}-e`} />
-                          <span className="text-sm">Encerrar contrato</span>
-                        </label>
-                      </RadioGroup>
-
-                      {c.decisao === "manual" && (
-                        <div className="space-y-1.5">
-                          <Label>Novo valor (R$)</Label>
-                          <Input
-                            type="number"
-                            placeholder="0,00"
-                            value={c.valorManual}
-                            onChange={(e) =>
-                              update(c.id, { valorManual: e.target.value })
-                            }
-                            className="max-w-xs"
-                          />
-                        </div>
-                      )}
-
-                      <div className="flex justify-end">
-                        <Button
-                          onClick={() => confirmar(c)}
-                          variant={
-                            c.decisao === "encerrar" ? "destructive" : "default"
-                          }
-                        >
-                          {c.decisao === "encerrar"
-                            ? "Confirmar Encerramento"
-                            : "Confirmar Renovação"}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      </section>
+      <RenovacaoSection />
     </div>
   );
 }
