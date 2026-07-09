@@ -100,6 +100,7 @@ async function fetchContracts(): Promise<ContractRow[]> {
 export function ContratosSection() {
   const queryClient = useQueryClient();
   const [toDeactivate, setToDeactivate] = useState<ContractRow | null>(null);
+  const [toReactivate, setToReactivate] = useState<ContractRow | null>(null);
 
   const { data: imoveis = [], isLoading, isError } = useQuery({
     queryKey: CONTRATOS_QUERY_KEY,
@@ -122,6 +123,25 @@ export function ContratosSection() {
     onError: (error) => {
       console.error("Erro ao desativar contrato:", error);
       toast.error("Não foi possível desativar o contrato. Tente novamente.");
+    },
+  });
+
+  const reactivateMutation = useMutation({
+    mutationFn: async (contractId: string) => {
+      const { error } = await supabase
+        .from("contracts")
+        .update({ status: "ativo" })
+        .eq("id", contractId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Contrato reativado com sucesso");
+      setToReactivate(null);
+      queryClient.invalidateQueries({ queryKey: CONTRATOS_QUERY_KEY });
+    },
+    onError: (error) => {
+      console.error("Erro ao reativar contrato:", error);
+      toast.error("Não foi possível reativar o contrato. Tente novamente.");
     },
   });
 
@@ -175,14 +195,23 @@ export function ContratosSection() {
                         )}
                       </td>
                       <td className="px-6 py-4 text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={im.status !== "ativo"}
-                          onClick={() => setToDeactivate(im)}
-                        >
-                          Desativar Contrato
-                        </Button>
+                        {im.status === "ativo" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setToDeactivate(im)}
+                          >
+                            Desativar Contrato
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setToReactivate(im)}
+                          >
+                            Reativar Contrato
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -220,6 +249,33 @@ export function ContratosSection() {
                 </>
               ) : (
                 "Sim, desativar"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!toReactivate} onOpenChange={(o) => !o && setToReactivate(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reativar contrato?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O contrato de <strong>{toReactivate?.inquilino_nome}</strong> em{" "}
+              <strong>{toReactivate?.imovel_endereco}</strong> será marcado como ativo.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reactivateMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => toReactivate && reactivateMutation.mutate(toReactivate.id)}
+              disabled={reactivateMutation.isPending}
+            >
+              {reactivateMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Reativando...
+                </>
+              ) : (
+                "Sim, reativar"
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Zap, Droplet, Hammer, Paintbrush, Wrench, CheckCircle2, Loader2 } from "lucide-react";
+import { Zap, Droplet, Hammer, Paintbrush, Wrench, CheckCircle2, Save, Loader2 } from "lucide-react";
 import { PageHeader } from "./PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -74,6 +74,25 @@ export function ManutencaoSection() {
     queryFn: fetchTickets,
   });
 
+  const salvarObservacaoMutation = useMutation({
+    mutationFn: async (t: Ticket) => {
+      const observacao = observacoes[t.id] ?? t.observacao;
+      const { error } = await supabase
+        .from("maintenance_tickets")
+        .update({ observacao })
+        .eq("id", t.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Observação salva");
+      queryClient.invalidateQueries({ queryKey: MANUTENCAO_QUERY_KEY });
+    },
+    onError: (error: Error) => {
+      console.error("Erro ao salvar observação:", error);
+      toast.error(error.message || "Não foi possível salvar a observação. Tente novamente.");
+    },
+  });
+
   const resolverMutation = useMutation({
     mutationFn: async (t: Ticket) => {
       const observacao = observacoes[t.id] ?? t.observacao;
@@ -117,8 +136,10 @@ export function ManutencaoSection() {
         {tickets.map((t) => {
           const Icon = iconMap[t.categoria];
           const resolvido = t.status === "resolvido";
-          const isPending =
+          const isResolving =
             resolverMutation.isPending && resolverMutation.variables?.id === t.id;
+          const isSaving =
+            salvarObservacaoMutation.isPending && salvarObservacaoMutation.variables?.id === t.id;
           return (
             <Card key={t.id} className={resolvido ? "opacity-60" : ""}>
               <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
@@ -160,19 +181,38 @@ export function ManutencaoSection() {
                   />
                 </div>
 
-                <Button
-                  className="w-full"
-                  disabled={resolvido || isPending}
-                  onClick={() => resolverMutation.mutate(t)}
-                >
-                  {isPending ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Resolvendo...
-                    </>
-                  ) : (
-                    "Marcar como Resolvido"
-                  )}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    disabled={resolvido || isSaving || isResolving}
+                    onClick={() => salvarObservacaoMutation.mutate(t)}
+                  >
+                    {isSaving ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Salvando...
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-4 w-4 mr-2" /> Salvar Observação
+                      </>
+                    )}
+                  </Button>
+
+                  <Button
+                    className="flex-1"
+                    disabled={resolvido || isResolving || isSaving}
+                    onClick={() => resolverMutation.mutate(t)}
+                  >
+                    {isResolving ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Resolvendo...
+                      </>
+                    ) : (
+                      "Marcar como Resolvido"
+                    )}
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           );
