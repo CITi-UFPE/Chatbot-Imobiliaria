@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   CheckCircle2,
@@ -28,66 +29,121 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/lib/supabase";
+import type { ContractRow, GarantiaTipo, TipoLocatario } from "@/lib/database.types";
 
-interface Imovel {
-  id: string;
-  endereco: string;
-  inquilino: string;
-  ativo: boolean;
+const CONTRATOS_QUERY_KEY = ["contracts"] as const;
+
+// Formato retornado pelo agente de extração (app/tools/contract_extraction.py,
+// modelo ExtracaoContratoResult em app/models/contract.py). Espelha o schema
+// SQL 1:1 — se o backend mudar de nome um campo, este tipo também precisa mudar.
+//
+// Nota: o formulário abaixo (Passo 3) só expõe pra edição manual os campos
+// mais prováveis de precisar de correção humana. Os demais campos NOT NULL
+// do banco (multa_infracao_*, aviso_previo_*, garantia_tipo) vêm preenchidos
+// pela extração e são enviados como estão — sem tela própria ainda. Se a
+// extração falhar em algum desses, o insert abaixo vai falhar com o erro do
+// Postgres (mais seguro do que inventar um valor default).
+interface ContratoExtraido {
+  imovel_identificacao: string;
+  imovel_endereco: string;
+  tipo_locatario: TipoLocatario;
+  inquilino_nome: string;
+  inquilino_cpf_cnpj: string;
+  locatario_endereco: string | null;
+  responsavel_contato_nome: string | null;
+  fiador_nome: string | null;
+  fiador_cpf: string | null;
+  fiador_endereco: string | null;
+  garantia_tipo: GarantiaTipo;
+  garantia_valor: number | null;
+  valor_aluguel: number;
+  dia_vencimento: number;
+  data_inicio: string; // YYYY-MM-DD
+  data_termino: string; // YYYY-MM-DD
+  indice_reajuste: "igpm" | "livre_negociacao" | null;
+  data_aniversario_reajuste: string | null;
+  multa_infracao_tipo: "meses_aluguel" | "percentual_valor_anual";
+  multa_infracao_valor: number;
+  multa_moratoria_percentual: number | null;
+  juros_moratorio_mensal: number;
+  aviso_previo_dias: number;
+  aviso_previo_a_partir_mes: number;
+  banco_agencia: string | null;
+  banco_conta: string | null;
+  pix_chave: string | null;
+  observacoes: string | null;
 }
 
-// Formato esperado de retorno do agente de extração (IA) ao ler o contrato.
-// Ajuste os campos aqui se o seu agente retornar nomes diferentes.
-interface DadosExtraidosContrato {
-  endereco: string;
-  inquilino: string;
-  valor: string;
-  vencimento: string; // formato "YYYY-MM-DD"
-  fiador: string;
-  clausulas: string;
+interface ClausulaExtraida {
+  numero_clausula: string;
+  titulo_clausula: string;
+  texto_clausula: string;
+  categoria: string;
 }
 
-const imoveisIniciais: Imovel[] = [
-  { id: "1", endereco: "Rua das Palmeiras, 245 — Apto 302", inquilino: "Ana Beatriz Souza", ativo: true },
-  { id: "2", endereco: "Av. Brasil, 1500 — Sala 8", inquilino: "Construtora Marca Ltda.", ativo: true },
-  { id: "3", endereco: "Rua Antônio Carlos, 89", inquilino: "Rafael Mendes", ativo: true },
-  { id: "4", endereco: "Alameda dos Ipês, 47", inquilino: "Marina Oliveira", ativo: false },
-  { id: "5", endereco: "Rua Sete de Setembro, 1010", inquilino: "João Pedro Almeida", ativo: true },
-];
+interface ExtracaoContratoResult {
+  contrato: ContratoExtraido;
+  clausulas: ClausulaExtraida[];
+}
+
+async function fetchContracts(): Promise<ContractRow[]> {
+  const { data, error } = await supabase
+    .from("contracts")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return data ?? [];
+}
 
 export function ContratosSection() {
-  const [imoveis, setImoveis] = useState(imoveisIniciais);
-  const [toDeactivate, setToDeactivate] = useState<Imovel | null>(null);
-  const [deactivating, setDeactivating] = useState(false);
+  const queryClient = useQueryClient();
+  const [toDeactivate, setToDeactivate] = useState<ContractRow | null>(null);
+  const [toReactivate, setToReactivate] = useState<ContractRow | null>(null);
 
-  const deactivate = async () => {
-    if (!toDeactivate) return;
+  const { data: imoveis = [], isLoading, isError } = useQuery({
+    queryKey: CONTRATOS_QUERY_KEY,
+    queryFn: fetchContracts,
+  });
 
-    setDeactivating(true);
-    try {
-      // ==========================================================
-      // 🔌 PONTO DE INTEGRAÇÃO: persistir a desativação no banco
-      // ==========================================================
-      // Chame aqui sua API/backend para marcar esse imóvel como
-      // inativo na linha correspondente do banco de dados.
-      //
-
-      // ---- MOCK: remova quando plugar a chamada real acima ----
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      // -----------------------------------------------------------
-
-      setImoveis((prev) =>
-        prev.map((i) => (i.id === toDeactivate.id ? { ...i, ativo: false } : i)),
-      );
+  const deactivateMutation = useMutation({
+    mutationFn: async (contractId: string) => {
+      const { error } = await supabase
+        .from("contracts")
+        .update({ status: "inativo" })
+        .eq("id", contractId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
       toast.success("Contrato desativado com sucesso");
       setToDeactivate(null);
-    } catch (error) {
+      queryClient.invalidateQueries({ queryKey: CONTRATOS_QUERY_KEY });
+    },
+    onError: (error) => {
       console.error("Erro ao desativar contrato:", error);
       toast.error("Não foi possível desativar o contrato. Tente novamente.");
-    } finally {
-      setDeactivating(false);
-    }
-  };
+    },
+  });
+
+  const reactivateMutation = useMutation({
+    mutationFn: async (contractId: string) => {
+      const { error } = await supabase
+        .from("contracts")
+        .update({ status: "ativo" })
+        .eq("id", contractId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Contrato reativado com sucesso");
+      setToReactivate(null);
+      queryClient.invalidateQueries({ queryKey: CONTRATOS_QUERY_KEY });
+    },
+    onError: (error) => {
+      console.error("Erro ao reativar contrato:", error);
+      toast.error("Não foi possível reativar o contrato. Tente novamente.");
+    },
+  });
 
   return (
     <div className="space-y-10">
@@ -100,9 +156,16 @@ export function ContratosSection() {
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Imóveis Cadastrados</CardTitle>
-            <CardDescription>{imoveis.length} imóveis no total</CardDescription>
+            <CardDescription>
+              {isLoading ? "Carregando..." : `${imoveis.length} imóveis no total`}
+            </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
+            {isError && (
+              <p className="px-6 py-4 text-sm text-destructive">
+                Não foi possível carregar os contratos. Verifique sua sessão e tente novamente.
+              </p>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50 text-muted-foreground">
@@ -116,26 +179,39 @@ export function ContratosSection() {
                 <tbody>
                   {imoveis.map((im) => (
                     <tr key={im.id} className="border-t hover:bg-muted/30 transition-colors">
-                      <td className="px-6 py-4 font-medium">{im.endereco}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{im.inquilino}</td>
+                      <td className="px-6 py-4 font-medium">{im.imovel_endereco}</td>
+                      <td className="px-6 py-4 text-muted-foreground">{im.inquilino_nome}</td>
                       <td className="px-6 py-4">
-                        {im.ativo ? (
+                        {im.status === "ativo" ? (
                           <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100 border-emerald-200">
                             Ativo
+                          </Badge>
+                        ) : im.status === "pendente_confirmacao" ? (
+                          <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100 border-amber-200">
+                            Pendente de confirmação
                           </Badge>
                         ) : (
                           <Badge variant="secondary">Inativo</Badge>
                         )}
                       </td>
                       <td className="px-6 py-4 text-right">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={!im.ativo}
-                          onClick={() => setToDeactivate(im)}
-                        >
-                          Desativar Contrato
-                        </Button>
+                        {im.status === "ativo" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setToDeactivate(im)}
+                          >
+                            Desativar Contrato
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setToReactivate(im)}
+                          >
+                            Reativar Contrato
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -147,8 +223,9 @@ export function ContratosSection() {
       </div>
 
       <UploadWizard
-        existingActiveAddresses={imoveis.filter((i) => i.ativo).map((i) => i.endereco)}
-        onCreate={(novo) => setImoveis((p) => [novo, ...p])}
+        existingActiveAddresses={imoveis
+          .filter((i) => i.status === "ativo")
+          .map((i) => i.imovel_endereco)}
       />
 
       <AlertDialog open={!!toDeactivate} onOpenChange={(o) => !o && setToDeactivate(null)}>
@@ -156,19 +233,49 @@ export function ContratosSection() {
           <AlertDialogHeader>
             <AlertDialogTitle>Desativar contrato?</AlertDialogTitle>
             <AlertDialogDescription>
-              O contrato de <strong>{toDeactivate?.inquilino}</strong> em{" "}
-              <strong>{toDeactivate?.endereco}</strong> será marcado como inativo.
+              O contrato de <strong>{toDeactivate?.inquilino_nome}</strong> em{" "}
+              <strong>{toDeactivate?.imovel_endereco}</strong> será marcado como inativo.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deactivating}>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={deactivate} disabled={deactivating}>
-              {deactivating ? (
+            <AlertDialogCancel disabled={deactivateMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => toDeactivate && deactivateMutation.mutate(toDeactivate.id)}
+              disabled={deactivateMutation.isPending}
+            >
+              {deactivateMutation.isPending ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Desativando...
                 </>
               ) : (
                 "Sim, desativar"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!toReactivate} onOpenChange={(o) => !o && setToReactivate(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reativar contrato?</AlertDialogTitle>
+            <AlertDialogDescription>
+              O contrato de <strong>{toReactivate?.inquilino_nome}</strong> em{" "}
+              <strong>{toReactivate?.imovel_endereco}</strong> será marcado como ativo.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reactivateMutation.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => toReactivate && reactivateMutation.mutate(toReactivate.id)}
+              disabled={reactivateMutation.isPending}
+            >
+              {reactivateMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Reativando...
+                </>
+              ) : (
+                "Sim, reativar"
               )}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -184,69 +291,81 @@ type Step = 1 | 2 | 3;
 
 function UploadWizard({
   existingActiveAddresses,
-  onCreate,
 }: {
   existingActiveAddresses: string[];
-  onCreate: (i: Imovel) => void;
 }) {
+  const queryClient = useQueryClient();
   const [step, setStep] = useState<Step>(1);
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
 
-  // Extracted data (preenchido pelo agente de IA no Passo 1 -> 2)
-  const [endereco, setEndereco] = useState("");
-  const [inquilino, setInquilino] = useState("");
-  const [valor, setValor] = useState("");
-  const [vencimento, setVencimento] = useState("");
-  const [fiador, setFiador] = useState("");
-  const [clausulas, setClausulas] = useState("");
-  const [camposExtraidosCount, setCamposExtraidosCount] = useState(0);
-
+  // Dados extraídos pelo agente de IA no Passo 1 -> 2. null até a extração
+  // acontecer; ficam editáveis no Passo 3 antes de salvar.
+  const [dados, setDados] = useState<ContratoExtraido | null>(null);
+  const [clausulas, setClausulas] = useState<ClausulaExtraida[]>([]);
   const [whatsapp, setWhatsapp] = useState("");
-  const [tipoLocatario, setTipoLocatario] = useState<"PF" | "PJ" | "">("");
-  const [responsavelPJ, setResponsavelPJ] = useState("");
 
-  const duplicado = existingActiveAddresses.some(
-    (a) => a.toLowerCase() === endereco.toLowerCase(),
-  );
+  const duplicado =
+    !!dados &&
+    existingActiveAddresses.some((a) => a.toLowerCase() === dados.imovel_endereco.toLowerCase());
 
   const handleFile = (f: File | null) => {
     if (!f) return;
     setFile(f);
   };
 
-  // Chamada ao agente de extração. Hoje está mockada; troque o corpo
-  // desta função pela chamada real (veja comentários abaixo).
-  const extrairDadosDoContrato = async (arquivo: File): Promise<DadosExtraidosContrato> => {
-    // ==========================================================
-    // 🔌 PONTO DE INTEGRAÇÃO: chamada ao agente de extração (IA)
-    // ==========================================================
-    // Aqui é onde você deve chamar o agente responsável por ler o
-    // arquivo (PDF/imagem do contrato) e extrair os dados estruturados.
-    //
-    // Fluxo sugerido:
-    // 1) Envie o arquivo para o seu backend (multipart/form-data).
-    // 2) No backend, converta o arquivo para base64 e chame a Claude
-    //    API (endpoint /v1/messages), enviando o arquivo como um
-    //    bloco "document" (PDF) ou "image", e peça uma resposta
-    //    SOMENTE em JSON com os campos abaixo.
-    // 3) O backend faz o parse do JSON e retorna para o front-end.
-    // 4) Aqui no front, apenas repasse esse JSON já tipado.
-    //
-    // ==========================================================
-
-    // ---- MOCK: remova este bloco quando plugar a chamada real acima ----
+  // ==========================================================
+  // 🔌 PONTO DE INTEGRAÇÃO: chamada ao agente de extração (IA)
+  // ==========================================================
+  // Hoje mockado. Troque pelo fluxo real:
+  // 1) Envie o arquivo para o backend FastAPI (multipart/form-data).
+  // 2) O backend usa app/tools/contract_extraction.py (já existe, feito
+  //    pela Julia) para chamar a Claude API e retornar um JSON no formato
+  //    de ExtracaoContratoResult (app/models/contract.py).
+  // 3) Aqui no front, apenas repasse esse JSON já tipado.
+  const extrairDadosDoContrato = async (_arquivo: File): Promise<ExtracaoContratoResult> => {
+    // ---- MOCK: remova quando plugar a chamada real ao backend ----
     await new Promise((resolve) => setTimeout(resolve, 1500));
     return {
-      endereco: "Rua das Palmeiras, 245 — Apto 302",
-      inquilino: "Ana Beatriz Souza",
-      valor: "2500",
-      vencimento: "2026-08-05",
-      fiador: "Carlos Souza",
-      clausulas:
-        "Prazo de 30 meses. Reajuste anual pelo IGP-M. Multa de 3 aluguéis em caso de rescisão antecipada.",
+      contrato: {
+        imovel_identificacao: "Apto 302, Ed. Aurora",
+        imovel_endereco: "Rua das Palmeiras, 245 — Apto 302",
+        tipo_locatario: "pf",
+        inquilino_nome: "Ana Beatriz Souza",
+        inquilino_cpf_cnpj: "000.000.000-00",
+        locatario_endereco: null,
+        responsavel_contato_nome: null,
+        fiador_nome: "Carlos Souza",
+        fiador_cpf: "111.111.111-11",
+        fiador_endereco: null,
+        garantia_tipo: "fiador",
+        garantia_valor: null,
+        valor_aluguel: 2500,
+        dia_vencimento: 5,
+        data_inicio: "2026-08-05",
+        data_termino: "2028-02-05",
+        indice_reajuste: "igpm",
+        data_aniversario_reajuste: "2027-08-05",
+        multa_infracao_tipo: "meses_aluguel",
+        multa_infracao_valor: 3,
+        multa_moratoria_percentual: 0.02,
+        juros_moratorio_mensal: 0.01,
+        aviso_previo_dias: 30,
+        aviso_previo_a_partir_mes: 12,
+        banco_agencia: null,
+        banco_conta: null,
+        pix_chave: null,
+        observacoes: null,
+      },
+      clausulas: [
+        {
+          numero_clausula: "3",
+          titulo_clausula: "Prazo",
+          texto_clausula: "O prazo deste contrato é de 18 meses...",
+          categoria: "prazo_vigencia",
+        },
+      ],
     };
     // ---------------------------------------------------------------------
   };
@@ -259,16 +378,9 @@ function UploadWizard({
 
     setLoading(true);
     try {
-      const dados = await extrairDadosDoContrato(file);
-
-      setEndereco(dados.endereco);
-      setInquilino(dados.inquilino);
-      setValor(dados.valor);
-      setVencimento(dados.vencimento);
-      setFiador(dados.fiador);
-      setClausulas(dados.clausulas);
-      setCamposExtraidosCount(Object.keys(dados).length);
-
+      const resultado = await extrairDadosDoContrato(file);
+      setDados(resultado.contrato);
+      setClausulas(resultado.clausulas);
       setStep(2);
     } catch (error) {
       console.error("Erro ao extrair dados do contrato:", error);
@@ -278,55 +390,65 @@ function UploadWizard({
     }
   };
 
-  const submit = async () => {
-    if (!whatsapp.trim()) return toast.error("WhatsApp é obrigatório");
-    if (!tipoLocatario) return toast.error("Selecione o tipo de locatário");
-    if (tipoLocatario === "PJ" && !responsavelPJ.trim())
-      return toast.error("Informe o nome do responsável pelo contrato (PJ)");
+  const submitMutation = useMutation({
+    mutationFn: async () => {
+      if (!dados) throw new Error("Nenhum dado extraído para salvar");
+      if (!whatsapp.trim()) throw new Error("WhatsApp é obrigatório");
 
-    setSaving(true);
-    try {
-      // ==========================================================
-      // 🔌 PONTO DE INTEGRAÇÃO: salvar o novo contrato no banco
-      // ==========================================================
-      // Chame aqui sua API/backend para persistir o novo imóvel/contrato,
-      // incluindo os campos revisados manualmente (endereco, inquilino,
-      // valor, vencimento, fiador, clausulas, whatsapp, tipoLocatario,
-      // responsavelPJ) na linha correspondente do banco de dados.
-      //
-      // ==========================================================
+      // status entra sempre como pendente_confirmacao — dado extraído por IA
+      // nunca vira contrato "ativo" direto, precisa de revisão humana
+      // (mesmo raciocínio da migration: mais seguro nascer travado).
+      const { data: contractRow, error: contractError } = await supabase
+        .from("contracts")
+        .insert({
+          ...dados,
+          telefone_whatsapp: whatsapp,
+          status: "pendente_confirmacao",
+        })
+        .select()
+        .single();
 
-      // ---- MOCK: remova quando plugar a chamada real acima ----
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      onCreate({
-        id: crypto.randomUUID(),
-        endereco,
-        inquilino,
-        ativo: true,
-      });
-      // -----------------------------------------------------------
+      if (contractError) throw contractError;
 
-      toast.success("Contrato salvo e ativado com sucesso!");
-      // reset
+      if (clausulas.length > 0) {
+        const { error: clausulasError } = await supabase.from("contract_clauses").insert(
+          clausulas.map((c) => ({
+            contract_id: contractRow.id,
+            numero_clausula: c.numero_clausula,
+            titulo_clausula: c.titulo_clausula,
+            texto_clausula: c.texto_clausula,
+            categoria: c.categoria,
+          })),
+        );
+        // Se as cláusulas falharem, o contrato já foi criado — melhor avisar
+        // e deixar staff revisar manualmente do que reverter silenciosamente.
+        if (clausulasError) {
+          console.error("Contrato criado, mas cláusulas falharam:", clausulasError);
+          toast.error(
+            "Contrato salvo, mas as cláusulas não foram gravadas. Revise manualmente.",
+          );
+        }
+      }
+
+      return contractRow;
+    },
+    onSuccess: () => {
+      toast.success("Contrato salvo como pendente de confirmação!");
+      queryClient.invalidateQueries({ queryKey: CONTRATOS_QUERY_KEY });
       setStep(1);
       setFile(null);
-      setEndereco("");
-      setInquilino("");
-      setValor("");
-      setVencimento("");
-      setFiador("");
-      setClausulas("");
-      setCamposExtraidosCount(0);
+      setDados(null);
+      setClausulas([]);
       setWhatsapp("");
-      setTipoLocatario("");
-      setResponsavelPJ("");
-    } catch (error) {
+    },
+    onError: (error: Error) => {
       console.error("Erro ao salvar contrato:", error);
-      toast.error("Não foi possível salvar o contrato. Tente novamente.");
-    } finally {
-      setSaving(false);
-    }
-  };
+      toast.error(error.message || "Não foi possível salvar o contrato. Tente novamente.");
+    },
+  });
+
+  const updateDados = (patch: Partial<ContratoExtraido>) =>
+    setDados((prev) => (prev ? { ...prev, ...patch } : prev));
 
   return (
     <Card>
@@ -394,14 +516,14 @@ function UploadWizard({
           </div>
         )}
 
-        {step === 2 && (
+        {step === 2 && dados && (
           <div className="space-y-4">
             <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-4 flex gap-3">
               <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
               <div className="text-sm">
                 <div className="font-medium text-emerald-800">Extração concluída pela Claude API</div>
                 <div className="text-emerald-700">
-                  Identificamos {camposExtraidosCount} campos no documento. Revise no próximo passo.
+                  {clausulas.length} cláusulas identificadas. Revise no próximo passo.
                 </div>
               </div>
             </div>
@@ -413,19 +535,19 @@ function UploadWizard({
                   <div className="font-bold text-amber-900">⚠ Contrato duplicado detectado</div>
                   <div className="text-amber-800">
                     Já existe um contrato <strong>ativo</strong> para o imóvel{" "}
-                    <strong>{endereco}</strong>. Verifique antes de prosseguir.
+                    <strong>{dados.imovel_endereco}</strong>. Verifique antes de prosseguir.
                   </div>
                 </div>
               </div>
             )}
 
             <dl className="grid sm:grid-cols-2 gap-4 text-sm bg-muted/30 rounded-lg p-4">
-              <ExtractRow label="Imóvel" value={endereco} />
-              <ExtractRow label="Inquilino" value={inquilino} />
-              <ExtractRow label="Valor" value={`R$ ${valor}`} />
-              <ExtractRow label="Vencimento" value={vencimento} />
-              <ExtractRow label="Fiador" value={fiador} />
-              <ExtractRow label="Cláusulas" value="Detectadas" />
+              <ExtractRow label="Imóvel" value={dados.imovel_endereco} />
+              <ExtractRow label="Inquilino" value={dados.inquilino_nome} />
+              <ExtractRow label="Valor" value={`R$ ${dados.valor_aluguel}`} />
+              <ExtractRow label="Vencimento (término)" value={dados.data_termino} />
+              <ExtractRow label="Fiador" value={dados.fiador_nome ?? "—"} />
+              <ExtractRow label="Cláusulas" value={`${clausulas.length} detectadas`} />
             </dl>
 
             <div className="flex justify-between">
@@ -437,77 +559,109 @@ function UploadWizard({
           </div>
         )}
 
-        {step === 3 && (
+        {step === 3 && dados && (
           <div className="space-y-5">
             <div className="grid md:grid-cols-2 gap-4">
               <Field label="Imóvel">
-                <Input value={endereco} onChange={(e) => setEndereco(e.target.value)} />
+                <Input
+                  value={dados.imovel_endereco}
+                  onChange={(e) => updateDados({ imovel_endereco: e.target.value })}
+                />
               </Field>
               <Field label="Inquilino">
-                <Input value={inquilino} onChange={(e) => setInquilino(e.target.value)} />
+                <Input
+                  value={dados.inquilino_nome}
+                  onChange={(e) => updateDados({ inquilino_nome: e.target.value })}
+                />
               </Field>
               <Field label="Valor do Aluguel (R$)">
                 <Input
                   type="number"
-                  value={valor}
-                  onChange={(e) => setValor(e.target.value)}
+                  value={dados.valor_aluguel}
+                  onChange={(e) => updateDados({ valor_aluguel: Number(e.target.value) })}
                 />
               </Field>
-              <Field label="Data de Vencimento">
+              <Field label="Data de Término">
                 <Input
                   type="date"
-                  value={vencimento}
-                  onChange={(e) => setVencimento(e.target.value)}
+                  value={dados.data_termino}
+                  onChange={(e) => updateDados({ data_termino: e.target.value })}
                 />
               </Field>
               <Field label="Fiador">
-                <Input value={fiador} onChange={(e) => setFiador(e.target.value)} />
+                <Input
+                  value={dados.fiador_nome ?? ""}
+                  onChange={(e) => updateDados({ fiador_nome: e.target.value || null })}
+                />
               </Field>
               <Field label="WhatsApp do inquilino/responsável *">
                 <Input
-                  placeholder="(11) 99999-9999"
+                  placeholder="+55 81 99999-9999"
                   value={whatsapp}
                   onChange={(e) => setWhatsapp(e.target.value)}
                 />
               </Field>
             </div>
 
-            <Field label="Cláusulas Principais">
+            {/* Campos abaixo são obrigatórios no banco (NOT NULL) mas raramente
+                precisam de correção manual — por isso ficam num bloco separado,
+                só leitura por padrão, editáveis se algo vier errado da extração. */}
+            <details className="rounded-lg border p-4">
+              <summary className="cursor-pointer text-sm font-medium">
+                Outros campos obrigatórios (garantia, multa, aviso prévio)
+              </summary>
+              <div className="grid md:grid-cols-2 gap-4 mt-4">
+                <Field label="Tipo de garantia">
+                  <Select
+                    value={dados.garantia_tipo}
+                    onValueChange={(v) => updateDados({ garantia_tipo: v as GarantiaTipo })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="fiador">Fiador</SelectItem>
+                      <SelectItem value="caucao">Caução</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Multa por infração (nº de aluguéis)">
+                  <Input
+                    type="number"
+                    value={dados.multa_infracao_valor}
+                    onChange={(e) => updateDados({ multa_infracao_valor: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Aviso prévio (dias)">
+                  <Input
+                    type="number"
+                    value={dados.aviso_previo_dias}
+                    onChange={(e) => updateDados({ aviso_previo_dias: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="CPF/CNPJ do inquilino">
+                  <Input
+                    value={dados.inquilino_cpf_cnpj}
+                    onChange={(e) => updateDados({ inquilino_cpf_cnpj: e.target.value })}
+                  />
+                </Field>
+              </div>
+            </details>
+
+            <Field label="Cláusulas identificadas">
               <Textarea
                 rows={4}
-                value={clausulas}
-                onChange={(e) => setClausulas(e.target.value)}
+                readOnly
+                value={clausulas.map((c) => `${c.numero_clausula} — ${c.titulo_clausula}`).join("\n")}
               />
             </Field>
 
-            <Field label="Tipo de Locatário *">
-              <Select value={tipoLocatario} onValueChange={(v) => setTipoLocatario(v as "PF" | "PJ")}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="PF">Pessoa Física</SelectItem>
-                  <SelectItem value="PJ">Pessoa Jurídica</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-
-            {tipoLocatario === "PJ" && (
-              <Field label="Nome do responsável pelo contrato (quem receberá as mensagens) *">
-                <Input
-                  value={responsavelPJ}
-                  onChange={(e) => setResponsavelPJ(e.target.value)}
-                  placeholder="Ex: Maria Silva — Diretora Financeira"
-                />
-              </Field>
-            )}
-
             <div className="flex justify-between pt-2">
-              <Button variant="outline" onClick={() => setStep(2)} disabled={saving}>
+              <Button variant="outline" onClick={() => setStep(2)} disabled={submitMutation.isPending}>
                 Voltar
               </Button>
-              <Button onClick={submit} disabled={saving}>
-                {saving ? (
+              <Button onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending}>
+                {submitMutation.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Salvando...
                   </>

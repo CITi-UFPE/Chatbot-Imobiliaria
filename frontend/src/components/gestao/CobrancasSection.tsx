@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle } from "lucide-react";
 import { PageHeader } from "./PageHeader";
 import { Badge } from "@/components/ui/badge";
@@ -14,125 +15,134 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { supabase } from "@/lib/supabase";
+import type { TipoResolucaoNegociacao } from "@/lib/database.types";
+
+const COBRANCAS_QUERY_KEY = ["charges-em-negociacao"] as const;
 
 type Tipo = "" | "total" | "parcial" | "negado";
 
+const TIPO_TO_RESOLUCAO: Record<Exclude<Tipo, "">, TipoResolucaoNegociacao> = {
+  total: "perdao_total",
+  parcial: "desconto_parcial",
+  negado: "negado",
+};
+
+// Linha vinda de charges + o contrato relacionado (join), já achatada pra UI.
 interface Negociacao {
-  id: string;
+  chargeId: string;
+  contractId: string;
   inquilino: string;
   imovel: string;
-  telefone: string | null; // null = "Não Registrado"
-  mes: string;
+  telefone: string | null;
+  mes: string; // formatado a partir de mes_referencia
   valor: number;
+}
+
+async function fetchNegociacoes(): Promise<Negociacao[]> {
+  const { data, error } = await supabase
+    .from("charges")
+    .select(
+      "id, contract_id, mes_referencia, valor_esperado, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp)",
+    )
+    .eq("status", "em_negociacao")
+    .order("mes_referencia", { ascending: false });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row: any) => ({
+    chargeId: row.id,
+    contractId: row.contract_id,
+    inquilino: row.contracts?.inquilino_nome ?? "—",
+    imovel: row.contracts?.imovel_endereco ?? "—",
+    telefone: row.contracts?.telefone_whatsapp ?? null,
+    mes: new Date(row.mes_referencia).toLocaleDateString("pt-BR", {
+      month: "long",
+      year: "numeric",
+    }),
+    valor: Number(row.valor_esperado),
+  }));
+}
+
+// Estado local só do formulário de resolução (tipo escolhido, valor digitado)
+// — não é dado do banco, por isso continua em useState em vez de query.
+interface FormState {
   tipo: Tipo;
   valorNegociado: string;
-  resolvida: boolean;
-  resolvidoEm: string | null; // ISO timestamp de quando foi resolvida
 }
 
-// Dados retornados quando uma negociação é resolvida,
-// prontos para você persistir no banco de dados.
-export interface ResolucaoResult {
-  id: string;
-  inquilino: string;
-  imovel: string;
-  mes: string;
-  valorOriginal: number;
-  tipo: Exclude<Tipo, "">;
-  valorNegociado: number | null; // null quando não se aplica (total/negado)
-  resolvidoEm: string; // ISO timestamp
-}
+export function CobrancasSection() {
+  const queryClient = useQueryClient();
+  const [forms, setForms] = useState<Record<string, FormState>>({});
 
-const iniciais: Negociacao[] = [
-  {
-    id: "n1",
-    inquilino: "Rafael Mendes",
-    imovel: "Rua Antônio Carlos, 89",
-    telefone: "(81) 99123-4567",
-    mes: "Junho/2026",
-    valor: 1850,
-    tipo: "",
-    valorNegociado: "",
-    resolvida: false,
-    resolvidoEm: null,
-  },
-  {
-    id: "n2",
-    inquilino: "Construtora Marca Ltda.",
-    imovel: "Av. Brasil, 1500 — Sala 8",
-    telefone: null,
-    mes: "Maio/2026",
-    valor: 4200,
-    tipo: "",
-    valorNegociado: "",
-    resolvida: false,
-    resolvidoEm: null,
-  },
-  {
-    id: "n3",
-    inquilino: "João Pedro Almeida",
-    imovel: "Rua Sete de Setembro, 1010",
-    telefone: "(81) 98877-2233",
-    mes: "Junho/2026",
-    valor: 2100,
-    tipo: "",
-    valorNegociado: "",
-    resolvida: false,
-    resolvidoEm: null,
-  },
-];
+  const { data: items = [], isLoading, isError } = useQuery({
+    queryKey: COBRANCAS_QUERY_KEY,
+    queryFn: fetchNegociacoes,
+  });
 
-interface CobrancasSectionProps {
-  // Chamado toda vez que uma negociação é confirmada.
-  // Use isso para persistir o resultado no seu banco de dados.
-  onResolve?: (resultado: ResolucaoResult) => void;
-}
+  const getForm = (id: string): FormState => forms[id] ?? { tipo: "", valorNegociado: "" };
+  const updateForm = (id: string, patch: Partial<FormState>) =>
+    setForms((prev) => ({ ...prev, [id]: { ...getForm(id), ...patch } }));
 
-export function CobrancasSection({ onResolve }: CobrancasSectionProps) {
-  const [items, setItems] = useState(iniciais);
+  const resolverMutation = useMutation({
+    mutationFn: async (n: Negociacao) => {
+      const form = getForm(n.chargeId);
+      if (!form.tipo) throw new Error("Selecione o tipo de resolução");
+      if (form.tipo === "parcial" && !form.valorNegociado)
+        throw new Error("Informe o valor negociado");
 
-  const update = (id: string, patch: Partial<Negociacao>) =>
-    setItems((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)));
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) throw new Error("Sessão expirada — faça login novamente");
 
-  const confirmar = (n: Negociacao) => {
-    if (!n.tipo) return toast.error("Selecione o tipo de resolução");
-    if (n.tipo === "parcial" && !n.valorNegociado)
-      return toast.error("Informe o valor negociado");
+      const valorNegociado = form.tipo === "parcial" ? Number(form.valorNegociado) : null;
 
-    const resultado: ResolucaoResult = {
-      id: n.id,
-      inquilino: n.inquilino,
-      imovel: n.imovel,
-      mes: n.mes,
-      valorOriginal: n.valor,
-      tipo: n.tipo as Exclude<Tipo, "">,
-      valorNegociado: n.tipo === "parcial" ? Number(n.valorNegociado) : null,
-      resolvidoEm: new Date().toISOString(),
-    };
+      const { error: negotiationError } = await supabase.from("charge_negotiations").insert({
+        charge_id: n.chargeId,
+        tipo_resolucao: TIPO_TO_RESOLUCAO[form.tipo as Exclude<Tipo, "">],
+        valor_negociado: valorNegociado,
+        decidido_por_user_id: user.id,
+        data_decisao: new Date().toISOString().slice(0, 10),
+      });
+      if (negotiationError) throw negotiationError;
 
-    const msgs: Record<Exclude<Tipo, "">, string> = {
-      total: `Olá ${n.inquilino}! Sua pendência de ${n.mes} foi perdoada integralmente. 🎉`,
-      parcial: `Olá ${n.inquilino}! Fechamos um acordo em R$ ${n.valorNegociado} referente a ${n.mes}.`,
-      negado: `Olá ${n.inquilino}, não foi possível conceder o desconto solicitado. Entre em contato.`,
-    };
-    const mensagem = msgs[n.tipo as Exclude<Tipo, "">];
+      // "negado" mantém a cobrança em aberto (volta pro estado de atrasado);
+      // perdão total/desconto parcial encerram a pendência como quitada.
+      // Julgamento de negócio — revisitar se o time quiser um status
+      // intermediário pra "desconto parcial pago vs. ainda a pagar".
+      const novoStatusCharge = form.tipo === "negado" ? "atrasado" : "quitado";
+      const { error: chargeError } = await supabase
+        .from("charges")
+        .update({ status: novoStatusCharge })
+        .eq("id", n.chargeId);
+      if (chargeError) throw chargeError;
 
-    // TODO: chamar aqui a função real de envio de mensagem via WhatsApp
-    // Ex: await enviarMensagemWhatsApp({ telefone: n.telefoneInquilino, mensagem });
-    // O toast abaixo é só uma simulação visual e deve ser mantido (ou ajustado)
-    // para refletir o resultado real do envio (sucesso/erro).
-    toast.success("WhatsApp enviado ao inquilino", {
-      description: mensagem,
-      icon: <MessageCircle className="h-4 w-4" />,
-    });
+      return { n, form };
+    },
+    onSuccess: ({ n, form }) => {
+      const msgs: Record<Exclude<Tipo, "">, string> = {
+        total: `Olá ${n.inquilino}! Sua pendência de ${n.mes} foi perdoada integralmente. 🎉`,
+        parcial: `Olá ${n.inquilino}! Fechamos um acordo em R$ ${form.valorNegociado} referente a ${n.mes}.`,
+        negado: `Olá ${n.inquilino}, não foi possível conceder o desconto solicitado. Entre em contato.`,
+      };
 
-    // Envia os dados decididos para quem estiver usando o componente
-    // (ex: para salvar no banco de dados)
-    onResolve?.(resultado);
+      // TODO: chamar aqui a função real de envio de mensagem via WhatsApp
+      // Ex: await enviarMensagemWhatsApp({ telefone: n.telefone, mensagem });
+      // O toast abaixo é só uma simulação visual e deve ser mantido (ou ajustado)
+      // para refletir o resultado real do envio (sucesso/erro).
+      toast.success("WhatsApp enviado ao inquilino", {
+        description: msgs[form.tipo as Exclude<Tipo, "">],
+        icon: <MessageCircle className="h-4 w-4" />,
+      });
 
-    // Marca como resolvida (o card fica visível por 24h antes de sumir)
-    update(n.id, { resolvida: true, resolvidoEm: resultado.resolvidoEm });
-  };
+      queryClient.invalidateQueries({ queryKey: COBRANCAS_QUERY_KEY });
+    },
+    onError: (error: Error) => {
+      console.error("Erro ao resolver negociação:", error);
+      toast.error(error.message || "Não foi possível registrar a resolução. Tente novamente.");
+    },
+  });
 
   return (
     <div>
@@ -140,53 +150,58 @@ export function CobrancasSection({ onResolve }: CobrancasSectionProps) {
         title="Cobranças em Negociação"
         description="Gerencie perdões, descontos parciais e negações."
       />
+      {isError && (
+        <p className="text-sm text-destructive mb-4">
+          Não foi possível carregar as cobranças em negociação. Verifique sua sessão e tente novamente.
+        </p>
+      )}
       <div className="grid gap-4">
-        {items.map((n) => (
-          <Card key={n.id} className={n.resolvida ? "opacity-70" : ""}>
-            <CardHeader className="flex flex-row items-start justify-between space-y-0">
-              <div>
-                <CardTitle className="text-base">{n.inquilino}</CardTitle>
-                <p className="text-sm text-muted-foreground mt-1">{n.imovel}</p>
-              </div>
-              {n.resolvida ? (
-                <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
-                  Resolvida
-                </Badge>
-              ) : (
+        {isLoading && (
+          <p className="text-sm text-muted-foreground text-center py-8">Carregando...</p>
+        )}
+        {items.map((n) => {
+          const form = getForm(n.chargeId);
+          const isPending =
+            resolverMutation.isPending && resolverMutation.variables?.chargeId === n.chargeId;
+          return (
+            <Card key={n.chargeId}>
+              <CardHeader className="flex flex-row items-start justify-between space-y-0">
+                <div>
+                  <CardTitle className="text-base">{n.inquilino}</CardTitle>
+                  <p className="text-sm text-muted-foreground mt-1">{n.imovel}</p>
+                </div>
                 <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">
                   Em Negociação
                 </Badge>
-              )}
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-3 gap-4 text-sm">
-                <div>
-                  <div className="text-xs uppercase text-muted-foreground">Mês de Referência</div>
-                  <div className="font-medium">{n.mes}</div>
-                </div>
-                <div>
-                  <div className="text-xs uppercase text-muted-foreground">Valor Original</div>
-                  <div className="font-semibold text-lg">
-                    R$ {n.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <div className="text-xs uppercase text-muted-foreground">Mês de Referência</div>
+                    <div className="font-medium">{n.mes}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase text-muted-foreground">Valor Original</div>
+                    <div className="font-semibold text-lg">
+                      R$ {n.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase text-muted-foreground">Telefone</div>
+                    <div className="font-medium">
+                      {n.telefone ?? (
+                        <span className="text-muted-foreground italic">Não Registrado</span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <div className="text-xs uppercase text-muted-foreground">Telefone</div>
-                  <div className="font-medium">
-                    {n.telefone ?? (
-                      <span className="text-muted-foreground italic">Não Registrado</span>
-                    )}
-                  </div>
-                </div>
-              </div>
 
-              {!n.resolvida && (
                 <div className="grid md:grid-cols-[1fr,1fr,auto] gap-3 items-end pt-2 border-t">
                   <div className="space-y-1.5">
                     <Label>Tipo de Resolução</Label>
                     <Select
-                      value={n.tipo}
-                      onValueChange={(v) => update(n.id, { tipo: v as Tipo })}
+                      value={form.tipo}
+                      onValueChange={(v) => updateForm(n.chargeId, { tipo: v as Tipo })}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder="Selecione..." />
@@ -198,26 +213,28 @@ export function CobrancasSection({ onResolve }: CobrancasSectionProps) {
                       </SelectContent>
                     </Select>
                   </div>
-                  {n.tipo === "parcial" ? (
+                  {form.tipo === "parcial" ? (
                     <div className="space-y-1.5">
                       <Label>Valor Negociado (R$)</Label>
                       <Input
                         type="number"
                         placeholder="0,00"
-                        value={n.valorNegociado}
-                        onChange={(e) => update(n.id, { valorNegociado: e.target.value })}
+                        value={form.valorNegociado}
+                        onChange={(e) => updateForm(n.chargeId, { valorNegociado: e.target.value })}
                       />
                     </div>
                   ) : (
                     <div />
                   )}
-                  <Button onClick={() => confirmar(n)}>Confirmar Resolução</Button>
+                  <Button onClick={() => resolverMutation.mutate(n)} disabled={isPending}>
+                    {isPending ? "Confirmando..." : "Confirmar Resolução"}
+                  </Button>
                 </div>
-              )}
-            </CardContent>
-          </Card>
-        ))}
-        {items.length === 0 && (
+              </CardContent>
+            </Card>
+          );
+        })}
+        {!isLoading && items.length === 0 && (
           <p className="text-sm text-muted-foreground text-center py-8">
             Nenhuma cobrança pendente de negociação.
           </p>
