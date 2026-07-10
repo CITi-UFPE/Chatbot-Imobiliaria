@@ -4,25 +4,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
 
-export function LoginScreen({ onLogin }: { onLogin: (email: string) => void }) {
-  const [email, setEmail] = useState("admin@gestaoimob.com");
-  const [password, setPassword] = useState("admin123");
+export function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) {
       toast.error("Preencha e-mail e senha");
       return;
     }
     setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
-      onLogin(email);
-      toast.success("Login efetuado com sucesso");
-    }, 600);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (error) {
+      toast.error(error.message || "Não foi possível autenticar. Verifique suas credenciais.");
+      return;
+    }
+    // O App reage via supabase.auth.onAuthStateChange — não precisamos
+    // navegar/setar estado manualmente aqui.
+    toast.success("Login efetuado com sucesso");
   };
 
   return (
@@ -90,16 +95,10 @@ export function LoginScreen({ onLogin }: { onLogin: (email: string) => void }) {
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Entrar"}
             </Button>
           </form>
-
-          <div className="mt-6 rounded-lg bg-muted/50 border border-dashed p-3 text-xs text-muted-foreground">
-            <div className="font-medium text-foreground mb-1">Credenciais de demonstração</div>
-            <div>E-mail: admin@gestaoimob.com</div>
-            <div>Senha: admin123</div>
-          </div>
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
-          v1.0 · Mock Data · Nenhuma credencial real é validada
+          v1.0 · Acesso restrito à equipe autorizada
         </p>
       </div>
     </div>

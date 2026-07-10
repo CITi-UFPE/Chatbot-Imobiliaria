@@ -11,8 +11,7 @@ import { ManutencaoSection } from "@/components/gestao/ManutencaoSection";
 import { RenovacoesSection } from "@/components/gestao/RenovacoesSection";
 import { LoginScreen } from "@/components/gestao/LoginScreen";
 import { toast } from "sonner";
-
-const AUTH_KEY = "gestaoimob:auth";
+import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -47,30 +46,26 @@ function Index() {
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    try {
-      const saved = sessionStorage.getItem(AUTH_KEY);
-      if (saved) setUser(saved);
-    } catch {
-      /* ignore */
-    }
-    setHydrated(true);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user.email ?? null);
+      setHydrated(true);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user.email ?? null);
+      setHydrated(true);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const handleLogin = (email: string) => {
-    setUser(email);
-    try {
-      sessionStorage.setItem(AUTH_KEY, email);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const handleLogout = () => {
-    setUser(null);
-    try {
-      sessionStorage.removeItem(AUTH_KEY);
-    } catch {
-      /* ignore */
+  const handleLogout = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      toast.error(error.message || "Não foi possível encerrar a sessão.");
+      return;
     }
     toast.success("Sessão encerrada");
   };
@@ -80,7 +75,7 @@ function Index() {
   if (!user) {
     return (
       <>
-        <LoginScreen onLogin={handleLogin} />
+        <LoginScreen />
         <Toaster richColors position="top-right" />
       </>
     );
