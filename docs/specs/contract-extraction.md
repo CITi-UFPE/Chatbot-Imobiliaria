@@ -1,7 +1,9 @@
 # Extração de dados de contrato (PDF → dados estruturados)
 
-Status: **rascunho v2** — validado em 3 contratos reais (PF+fiador x2, PJ+caução x1), pendente de
-decisões listadas em "Limitações e pendências" antes de considerar isso pronto para os 12 contratos.
+Status: **rascunho v3** — validado em 4 contratos reais (PF+fiador x3, PJ+caução x1) e agora
+**integrado de ponta a ponta com o frontend** (upload na tela → extração → edição → salva no
+Supabase). Pendente de decisões listadas em "Limitações e pendências" antes de considerar isso
+pronto para os 12 contratos.
 
 ## Objetivo
 
@@ -18,8 +20,12 @@ sem intervenção manual.
 - `app/tools/contract_extraction.py` — chama a Claude API (tool use) passando o PDF como
   documento e o schema Pydantic como `input_schema` da tool. `extrair_dados_contrato(caminho_pdf)`
   retorna um `ExtracaoContratoResult` validado.
-- `tests/test_contract_models.py`, `tests/test_contract_extraction.py` — 15 testes unitários,
-  sem custo de API (validadores Pydantic + chamada à Claude mockada).
+- `app/api/main.py`, `app/api/routers/contracts.py` — endpoint HTTP síncrono (`POST
+  /contracts/extrair`) que expõe `extrair_dados_contrato` pra rede. Não fala com o Supabase —
+  só extrai e devolve JSON (ver "Endpoint HTTP" e "Integração com o frontend" abaixo).
+- `tests/test_contract_models.py`, `tests/test_contract_extraction.py`,
+  `tests/test_contracts_endpoint.py` — 19 testes unitários, sem custo de API (validadores
+  Pydantic + chamada à Claude mockada + `TestClient` do FastAPI).
 
 ## Modelo usado
 
@@ -39,6 +45,60 @@ Opus, e não é simples o bastante pra confiar em Haiku sem validar antes.
    gravação.
 5. Resultado salvo em `data/extracoes/<nome_do_pdf>.json` (pasta local, fora do git — contém PII
    real de inquilino/fiador).
+
+## Endpoint HTTP (`POST /contracts/extrair`)
+
+Multipart form com um campo (`arquivo`, o PDF). Devolve o `ExtracaoContratoResult` como JSON —
+**não grava nada no Supabase**, só extrai. Quem persiste é o frontend (ver seção seguinte).
+
+Decisões de design:
+- **Síncrono, não assíncrono/fila** — decisão consciente: contratos são subidos um de cada vez por
+  um humano que pode esperar de segundos a alguns minutos. Se isso virar um problema real (ex:
+  processamento em lote dos contratos restantes), dá pra migrar pra `arq`/`redis` (já estão no
+  `requirements.txt` pra outros jobs futuros) sem redesenhar a extração em si.
+- **Handler `def` síncrono, não `async def`** — `extrair_dados_contrato` bloqueia por até ~3
+  minutos fazendo streaming pra Claude. Um handler `async def` chamando isso direto travaria o
+  event loop inteiro do FastAPI (inclusive outros endpoints, tipo o futuro webhook do WhatsApp
+  nesse mesmo app). Com `def` simples, o Starlette roda automaticamente numa threadpool.
+- **Erros**: `content_type != application/pdf` → 415. Qualquer `RuntimeError` de
+  `extrair_dados_contrato` (recusa da Claude, truncamento por `max_tokens`, `clausulas` vazia
+  após retries) → 422 com o detalhe original na resposta.
+- **CORS**: `app/api/main.py` libera `http://localhost:8080` explicitamente (origem do frontend em
+  dev). Precisa atualizar essa lista quando o frontend for pra produção.
+
+## Integração com o frontend (Lovable)
+
+**Achado importante ao planejar essa integração**: o frontend
+(`frontend/src/components/gestao/ContratosSection.tsx`) já tinha o fluxo inteiro pronto — upload de PDF (3 passos: upload → conferir
+→ editar/salvar), campo de WhatsApp, e o **insert direto no Supabase** (`contracts` +
+`contract_clauses`, sempre com `status: 'pendente_confirmacao'`) usando a própria sessão
+autenticada da gestora logada. RLS (`staff_full_access`, `002_auth_rbac_rls.sql`) já dá acesso
+total de leitura/escrita pra qualquer staff logado nessas duas tabelas — não precisa de
+`service_role` nem de o backend gravar nada.
+
+A única peça que faltava era a função `extrairDadosDoContrato()`, que estava mockada com dados
+fake. Trocada por um `fetch()` real pro endpoint acima:
+
+```ts
+const formData = new FormData();
+formData.append("arquivo", arquivo);
+const response = await fetch(`${import.meta.env.VITE_API_URL}/contracts/extrair`, {
+  method: "POST",
+  body: formData,
+});
+```
+
+`VITE_API_URL` é variável de ambiente nova (`frontend/.env`, default `http://localhost:8000` em
+dev). Os nomes de campo em `ContratoExtraido`/`ClausulaExtraida` no TypeScript já batiam 1:1 com o
+Pydantic — confirmado, não precisou de nenhuma tradução de formato. Importante: a tela só **mostra**
+um resumo de ~6 campos pra conferência rápida (Passo 2/3), mas o insert manda o objeto inteiro
+(`{...dados}`) — todos os campos extraídos são gravados, mesmo os sem campo próprio na tela. O
+mesmo vale pras cláusulas: todas as que a extração retornar são salvas, sem filtro de categoria.
+
+**Bug encontrado durante o teste manual (não relacionado à extração)**:
+`frontend/src/lib/supabase.ts` expunha o client Supabase no `window` em modo dev (pra login de teste via console),
+sem checar se `window` existe — quebrava o SSR do TanStack Start com `ReferenceError: window is
+not defined`. Corrigido com uma guarda (`typeof window !== "undefined"`).
 
 ## Custo por contrato
 
@@ -77,22 +137,32 @@ vários assuntos, ex: "Uso do Imóvel" misturando rescisão + sublocação + des
 resolvido por essa migration, porque `categoria` continua sendo um valor único por cláusula. Ver
 "Opções para resolver" em `categorizacao-clausulas.md` para as alternativas discutidas.
 
-### 2. `telefone_whatsapp` não é extraído
-Coluna `not null` em `contracts`, mas não existe no PDF do contrato — é dado operacional que
-precisa vir de outra fonte (cadastro do inquilino) na hora de gravar no Supabase. Não é um bug de
-prompt/schema; é uma dependência externa que a etapa de persistência (ainda não implementada) vai
-precisar resolver.
+### 2. `telefone_whatsapp` não é extraído — resolvido (não é responsabilidade da extração)
+Coluna `not null` em `contracts`, mas não existe no PDF do contrato — é dado operacional. Não
+precisou virar problema da extração/endpoint: o campo é coletado numa tela própria do frontend
+(Passo 3, depois da extração) e vai direto pro insert que o próprio frontend faz no Supabase — o
+endpoint de extração nunca vê esse campo.
 
 `locatario_endereco` e `fiador_endereco` (colunas novas da Migration 003) são diferentes — esses
 **sim** costumam aparecer no PDF (endereço residencial das partes, na qualificação do contrato) e
-já foram adicionados a `ContratoExtraido`. Ainda não testados numa extração real após a mudança.
+já foram adicionados a `ContratoExtraido`. Testados e confirmados em extrações reais.
 
 ### 3. Não-determinismo do modelo
-Observado pelo menos uma vez: mesma chamada (mesmo PDF, mesmo prompt) retornando `clausulas: []`
+Observado repetidas vezes: mesma chamada (mesmo PDF, mesmo prompt) retornando `clausulas: []`
 sem erro — resultado sintaticamente válido, mas semanticamente errado (contrato real sempre tem
 cláusulas). Mitigado com retry automático em `extrair_dados_contrato` (`max_tentativas=2`, levanta
 `RuntimeError` se persistir). Categorização de cláusulas-fronteira (ex: 2.2, 4.6) também variou
 entre chamadas idênticas — `categoria` deve ser tratado como filtro auxiliar, não dado 100% estável.
+
+**Achado durante o teste manual do endpoint**: o contrato 01 (Parnamirim), que sempre extraiu bem
+antes, falhou 4 vezes seguidas (`clausulas: []` mesmo após retry) num teste recente — incluindo uma
+tentativa direto pelo CLI, sem passar pelo endpoint novo, confirmando que não é bug do endpoint.
+Diagnóstico da resposta bruta mostrou `stop_reason: tool_use` com só ~980 tokens de saída (não é
+truncamento por `max_tokens` — o modelo genuinamente parou de gerar depois do campo `contrato`,
+sem escrever `clausulas`). Um contrato diferente (02) funcionou de primeira logo em seguida. Sem
+explicação definitiva — pode ser flutuação normal da API, ou alguma interação com o prompt mais
+longo depois de adicionarmos a instrução de quebrar cláusulas em sub-itens. Vale monitorar se a
+taxa de falha aumentou de fato ou se foi só uma sequência de azar.
 
 ### 4. `strict: true` (structured outputs) não é viável
 O schema completo (contrato + lista de cláusulas) excede o limite de complexidade da API para
@@ -114,19 +184,29 @@ antigo do schema sobre o ARCO ser "isento de multa moratória" estava incorreto 
 Migration 003, mas o valor exato (1% combinado ou 1%+1% empilhado com juros) continua pendente de
 confirmação com o cliente antes de carregar os dados desse contrato específico.
 
-Ainda não testado: contratos fora do template padrão "Domingos Monteiro"/"Golden Beach" (os 3
-testados até agora, apesar de PF/PJ diferentes, usam a mesma estrutura de cláusulas numeradas).
+Testado com sucesso um 4º contrato fora dos templates "Golden Beach"/"Parnamirim" (endereço
+"Estrada das Ubaias, 20") — mesma estrutura de cláusulas numeradas, então ainda não prova
+generalização pra um formato de contrato genuinamente diferente. Faltam 8 dos 12 contratos.
 
-### 7. Persistência no Supabase — não implementada
-Hoje o script só valida e salva localmente em `data/extracoes/`. Não grava em `contracts` nem
-`contract_clauses`. A coluna `status` já tem default `'pendente_confirmacao'`, sugerindo o fluxo
-pretendido: extrair → gravar como pendente → humano confirma no Lovable → status vira `'ativo'`.
-Essa etapa ainda não existe.
+### 7. Persistência no Supabase — resolvido, mas não como esperado
+A suposição original era que o backend gravaria em `contracts`/`contract_clauses` usando a
+`service_role` key. Na prática, **o frontend já tinha esse fluxo pronto**: ele grava direto no
+Supabase usando a própria sessão autenticada da gestora (RLS `staff_full_access` já dá acesso
+total pra staff logado — não precisa de `service_role` nem de o backend fazer isso). O endpoint
+novo (`POST /contracts/extrair`) só extrai e devolve JSON; quem persiste é o
+`ContratosSection.tsx`, que já fazia `status: 'pendente_confirmacao'` no insert. Ver "Integração
+com o frontend" acima.
 
 ## O que já está validado
-- Extração completa de cláusulas (após corrigir prompt que estava pulando cláusulas "redundantes")
+- Extração completa de cláusulas, incluindo sub-itens numerados/em alíneas quebrados em entradas
+  separadas (após corrigir prompt que estava pulando cláusulas "redundantes" e depois agrupando
+  sub-itens compostos)
 - Encoding UTF-8 correto na saída (bug de codepage do Windows corrigido)
 - Validações de negócio via Pydantic (fiador, caução, datas) funcionando como trava antes de
   qualquer gravação, incluindo o caso PJ + caução (não exige fiador)
-- Enum de categorias atualizado para as 12 categorias da Migration 003
-- 15 testes unitários cobrindo validadores e lógica de retry/erro (sem custo de API)
+- Enum de categorias atualizado para as 12 categorias da Migration 003 — confirmado reduzindo
+  drasticamente o catch-all em `rescisao` num reteste do contrato ARCO
+- Endpoint `POST /contracts/extrair` funcionando de ponta a ponta: testado via `curl` direto e via
+  upload real na tela do Lovable (com CORS liberado pra `localhost:8080`)
+- 19 testes unitários cobrindo validadores, lógica de retry/erro e o endpoint HTTP (mockado, sem
+  custo de API)
