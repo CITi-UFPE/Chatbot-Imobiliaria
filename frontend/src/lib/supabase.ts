@@ -26,6 +26,6 @@ export const supabase = createClient(supabaseUrl, supabaseKey);
 // no console do navegador pra dar login de teste sem depender da tela de
 // login de verdade (feita separadamente no Lovable). Uso:
 //   await supabase.auth.signInWithPassword({ email: "...", password: "..." })
-if (import.meta.env.DEV) {
+if (import.meta.env.DEV && typeof window !== "undefined") {
   (window as unknown as { supabase: typeof supabase }).supabase = supabase;
 }

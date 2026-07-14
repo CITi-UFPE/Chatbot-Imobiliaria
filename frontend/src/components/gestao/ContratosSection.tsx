@@ -318,56 +318,28 @@ function UploadWizard({
   // ==========================================================
   // 🔌 PONTO DE INTEGRAÇÃO: chamada ao agente de extração (IA)
   // ==========================================================
-  // Hoje mockado. Troque pelo fluxo real:
-  // 1) Envie o arquivo para o backend FastAPI (multipart/form-data).
-  // 2) O backend usa app/tools/contract_extraction.py (já existe, feito
-  //    pela Julia) para chamar a Claude API e retornar um JSON no formato
-  //    de ExtracaoContratoResult (app/models/contract.py).
-  // 3) Aqui no front, apenas repasse esse JSON já tipado.
-  const extrairDadosDoContrato = async (_arquivo: File): Promise<ExtracaoContratoResult> => {
-    // ---- MOCK: remova quando plugar a chamada real ao backend ----
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    return {
-      contrato: {
-        imovel_identificacao: "Apto 302, Ed. Aurora",
-        imovel_endereco: "Rua das Palmeiras, 245 — Apto 302",
-        tipo_locatario: "pf",
-        inquilino_nome: "Ana Beatriz Souza",
-        inquilino_cpf_cnpj: "000.000.000-00",
-        locatario_endereco: null,
-        responsavel_contato_nome: null,
-        fiador_nome: "Carlos Souza",
-        fiador_cpf: "111.111.111-11",
-        fiador_endereco: null,
-        garantia_tipo: "fiador",
-        garantia_valor: null,
-        valor_aluguel: 2500,
-        dia_vencimento: 5,
-        data_inicio: "2026-08-05",
-        data_termino: "2028-02-05",
-        indice_reajuste: "igpm",
-        data_aniversario_reajuste: "2027-08-05",
-        multa_infracao_tipo: "meses_aluguel",
-        multa_infracao_valor: 3,
-        multa_moratoria_percentual: 0.02,
-        juros_moratorio_mensal: 0.01,
-        aviso_previo_dias: 30,
-        aviso_previo_a_partir_mes: 12,
-        banco_agencia: null,
-        banco_conta: null,
-        pix_chave: null,
-        observacoes: null,
-      },
-      clausulas: [
-        {
-          numero_clausula: "3",
-          titulo_clausula: "Prazo",
-          texto_clausula: "O prazo deste contrato é de 18 meses...",
-          categoria: "prazo_vigencia",
-        },
-      ],
-    };
-    // ---------------------------------------------------------------------
+  // Envia o PDF pro backend FastAPI (app/api/routers/contracts.py), que
+  // chama app/tools/contract_extraction.py (Claude API) e devolve o JSON
+  // no formato de ExtracaoContratoResult. O front só repassa, já tipado.
+  const extrairDadosDoContrato = async (arquivo: File): Promise<ExtracaoContratoResult> => {
+    const formData = new FormData();
+    formData.append("arquivo", arquivo);
+
+    const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+    const response = await fetch(`${apiUrl}/contracts/extrair`, {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+
+    if (!response.ok) {
+      const erro = await response.json().catch(() => null);
+      throw new Error(erro?.detail ?? "Falha ao extrair dados do contrato.");
+    }
+
+    return response.json();
   };
 
   const goToStep2 = async () => {
