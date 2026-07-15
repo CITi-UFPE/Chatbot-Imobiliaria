@@ -6,6 +6,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from app.models.contract import ExtracaoContratoResult
+from app.tools.anthropic_helpers import extrair_bloco_tool_use
 
 load_dotenv()
 
@@ -112,7 +113,7 @@ def extrair_dados_contrato(
                 "MAX_TOKENS; o truncamento é determinístico para o mesmo PDF."
             )
 
-        tool_use = next((block for block in response.content if block.type == "tool_use"), None)
+        tool_use = extrair_bloco_tool_use(response)
         if tool_use is None:
             raise RuntimeError(f"Claude não retornou dados estruturados para {caminho_pdf}")
 
