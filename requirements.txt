@@ -3,6 +3,7 @@ uvicorn[standard]
 python-multipart
 anthropic
 supabase
+PyJWT
 httpx
 tenacity
 arq
