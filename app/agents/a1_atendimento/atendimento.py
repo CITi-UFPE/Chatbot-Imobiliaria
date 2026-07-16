@@ -25,17 +25,17 @@ O `contract_id` só existe do lado Python, no fechamento (closure) de
 (obter_client_agente(contract_id)) — nunca é enviado como argumento de RPC.
 O modelo não tem, em nenhuma camada, a opção de pedir dado de outro contrato.
 
-TODO (pendente de decisão de design, mesmo espírito das notas em
-criterios.py): o critério 'sem_clausula' do A5 depende do resultado de
+RESOLVIDO (era TODO): o critério 'sem_clausula' do A5 depende do resultado de
 `buscar_dados_inquilino` (só dá pra saber que não há cláusula correspondente
-DEPOIS de buscar os dados), mas a checagem de escalonamento abaixo roda
-ANTES da busca, só com o texto da mensagem. Por ora o system prompt instrui
-o A1 a avisar diretamente que não encontrou cláusula correspondente (sem
-prometer "verificar" ou "retornar", já que ninguém de fato vai atrás disso
-ainda), mas o escalonamento formal (motivo=sem_clausula, protocolo gerado)
-não dispara sozinho nesse caso — falta decidir se rodamos
-avaliar_escalonamento de novo depois do tool-use, ou se o A1 chama
-executar_escalonamento diretamente com motivo fixo quando detectar isso.
+DEPOIS de buscar os dados), então a checagem de escalonamento no início de
+`responder_inquilino` (que roda ANTES da busca, só com o texto da mensagem)
+não cobre esse caso. Resolvido com uma terceira tool, `escalar_sem_clausula`
+— o Claude a chama explicitamente quando `buscar_dados_inquilino` não trouxe
+nada relevante pra pergunta, em vez de só responder em texto que não achou.
+Isso reaproveita o mesmo loop de tool-use já existente (sem chamada extra à
+API) e segue o mesmo padrão do fallback de MAX_RODADAS_TOOL_USE abaixo:
+monta a AvaliacaoEscalonamento com motivo fixo e chama executar_escalonamento
+diretamente, sem passar por avaliar_escalonamento de novo.
 """
 
 import json
@@ -62,6 +62,7 @@ MAX_RODADAS_TOOL_USE = 4
 
 TOOL_BUSCAR_DADOS = "buscar_dados_inquilino"
 TOOL_CONSULTAR_HISTORICO = "consultar_historico"
+TOOL_ESCALAR_SEM_CLAUSULA = "escalar_sem_clausula"
 
 SYSTEM_PROMPT = """Você é o Agente de Atendimento ao Inquilino de uma imobiliária, falando via WhatsApp.
 
@@ -77,10 +78,10 @@ que o inquilino quer, diga que vai encaminhar e não tente resolver sozinho.
 
 ## DADOS
 Use a tool 'buscar_dados_inquilino' antes de responder qualquer pergunta factual sobre o
-contrato. Nunca invente ou presuma valores. Se a tool não retornar o dado perguntado ou não
-houver cláusula correspondente, diga isso diretamente ao inquilino — não afirme algo que não
-veio da tool, e não prometa "verificar" ou "retornar" (isso só deveria ser dito se o caso
-realmente for escalado para a equipe).
+contrato. Nunca invente ou presuma valores. Se, depois de consultar, não houver cláusula
+correspondente à pergunta do inquilino, NÃO responda diretamente que "não encontrou" — chame a
+tool 'escalar_sem_clausula' em vez disso. Isso registra o caso formalmente para a equipe avaliar
+se é uma lacuna real do contrato, e você recebe de volta a mensagem certa para o inquilino.
 
 ## RAMIFICAÇÃO PF/PJ
 O campo `tipo_locatario` retornado será "pf" ou "pj":
@@ -150,6 +151,25 @@ def _tools_schema() -> list[dict]:
                         "default": "todos",
                     },
                 },
+            },
+        },
+        {
+            "name": TOOL_ESCALAR_SEM_CLAUSULA,
+            "description": (
+                "Chame esta tool quando 'buscar_dados_inquilino' já tiver sido consultada e "
+                "nenhuma cláusula do contrato responder à pergunta do inquilino. NÃO responda "
+                "em texto que 'não encontrou' — chame esta tool, que registra o caso para a "
+                "equipe humana avaliar e devolve a mensagem correta para o inquilino."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "resumo_pergunta": {
+                        "type": "string",
+                        "description": "Resumo objetivo, em uma frase, da pergunta sem cláusula correspondente.",
+                    },
+                },
+                "required": ["resumo_pergunta"],
             },
         },
     ]
@@ -238,6 +258,26 @@ def responder_inquilino(
         blocos_tool_use = [b for b in response.content if b.type == "tool_use"]
         if not blocos_tool_use:
             return next((b.text for b in response.content if b.type == "text"), "")
+
+        # Caminho terminal: se o modelo chamou escalar_sem_clausula (em vez de,
+        # ou junto com, outras tools nesta mesma rodada), ignora o resto e
+        # escala direto — não faz sentido continuar o loop de tool-use depois
+        # de decidir que o caso deve ir pra equipe.
+        bloco_sem_clausula = next(
+            (b for b in blocos_tool_use if b.name == TOOL_ESCALAR_SEM_CLAUSULA), None
+        )
+        if bloco_sem_clausula is not None:
+            resumo = bloco_sem_clausula.input.get("resumo_pergunta", mensagem_atual)
+            avaliacao = AvaliacaoEscalonamento(
+                motivo="sem_clausula",
+                descricao=f"A1 não encontrou cláusula correspondente à pergunta: {resumo}",
+                resposta_para_inquilino=(
+                    "Não encontrei uma cláusula do seu contrato que trate exatamente disso. "
+                    "Vou encaminhar para a equipe avaliar e você recebe um retorno em breve."
+                ),
+            )
+            executar_escalonamento(contract_id, avaliacao)
+            return avaliacao.resposta_para_inquilino
 
         messages.append({"role": "assistant", "content": response.content})
 
