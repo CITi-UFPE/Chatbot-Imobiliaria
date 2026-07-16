@@ -30,11 +30,12 @@ criterios.py): o critério 'sem_clausula' do A5 depende do resultado de
 `buscar_dados_inquilino` (só dá pra saber que não há cláusula correspondente
 DEPOIS de buscar os dados), mas a checagem de escalonamento abaixo roda
 ANTES da busca, só com o texto da mensagem. Por ora o system prompt instrui
-o A1 a avisar que vai verificar quando não encontrar cláusula, mas o
-escalonamento formal (motivo=sem_clausula, protocolo gerado) não dispara
-sozinho nesse caso — falta decidir se rodamos avaliar_escalonamento de novo
-depois do tool-use, ou se o A1 chama executar_escalonamento diretamente com
-motivo fixo quando detectar isso.
+o A1 a avisar diretamente que não encontrou cláusula correspondente (sem
+prometer "verificar" ou "retornar", já que ninguém de fato vai atrás disso
+ainda), mas o escalonamento formal (motivo=sem_clausula, protocolo gerado)
+não dispara sozinho nesse caso — falta decidir se rodamos
+avaliar_escalonamento de novo depois do tool-use, ou se o A1 chama
+executar_escalonamento diretamente com motivo fixo quando detectar isso.
 """
 
 import json
@@ -76,8 +77,10 @@ que o inquilino quer, diga que vai encaminhar e não tente resolver sozinho.
 
 ## DADOS
 Use a tool 'buscar_dados_inquilino' antes de responder qualquer pergunta factual sobre o
-contrato. Nunca invente ou presuma valores. Se a tool não retornar o dado perguntado, diga
-que vai verificar com a equipe — não afirme algo que não veio da tool.
+contrato. Nunca invente ou presuma valores. Se a tool não retornar o dado perguntado ou não
+houver cláusula correspondente, diga isso diretamente ao inquilino — não afirme algo que não
+veio da tool, e não prometa "verificar" ou "retornar" (isso só deveria ser dito se o caso
+realmente for escalado para a equipe).
 
 ## RAMIFICAÇÃO PF/PJ
 O campo `tipo_locatario` retornado será "pf" ou "pj":
@@ -115,26 +118,14 @@ def _tools_schema() -> list[dict]:
         {
             "name": TOOL_BUSCAR_DADOS,
             "description": (
-                "Busca os dados estruturados do contrato do inquilino desta conversa: "
+                "Busca todos os dados estruturados do contrato do inquilino desta conversa: "
                 "tipo_locatario ('pf' ou 'pj'), valor do aluguel, datas, garantia, e "
                 "cláusulas com número/título/texto/categoria. Chame esta tool ANTES de "
                 "responder qualquer pergunta factual sobre o contrato — nunca responda com "
                 "um valor que não veio daqui. O contrato já está fixado pela sessão atual; "
                 "não é possível buscar dados de outro contrato através desta tool."
             ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "campos": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Opcional. Campos específicos a priorizar (ex: "
-                            "['valor_aluguel', 'clausulas']). Se omitido, retorna tudo."
-                        ),
-                    }
-                },
-            },
+            "input_schema": {"type": "object", "properties": {}},
         },
         {
             "name": TOOL_CONSULTAR_HISTORICO,
@@ -164,7 +155,7 @@ def _tools_schema() -> list[dict]:
     ]
 
 
-def _executar_buscar_dados_inquilino(contract_id: str, campos: list[str] | None = None) -> dict:
+def _executar_buscar_dados_inquilino(contract_id: str) -> dict:
     # contract_id só escolhe QUAL client/token usar — a RPC em si não recebe
     # contract_id como argumento, ela resolve isso internamente via
     # agent_contract_id() lendo o claim do próprio JWT (ver migration
@@ -178,9 +169,14 @@ def _executar_buscar_dados_inquilino(contract_id: str, campos: list[str] | None 
     # explícita, não virar um campo estranho que o Claude tenta interpretar.
     DadosInquilino.model_validate(dados)
 
-    if campos:
-        filtrado = {k: v for k, v in dados.items() if k in campos}
-        return filtrado or dados
+    # SEM filtragem por campos: sempre devolve o dict completo. Havia um
+    # parâmetro opcional 'campos' aqui antes, permitindo o modelo pedir um
+    # recorte — mas isso criou um modo de falha real em teste: o modelo
+    # pediu só ['valor_aluguel'] para uma pergunta que também envolvia
+    # vencimento, recebeu de volta um dict sem dia_vencimento, e concluiu
+    # (errado) que o dado "não existe no sistema" — sem perceber que foi
+    # ele mesmo quem causou o recorte. Como o payload de um contrato inteiro
+    # é pequeno, o ganho de token da filtragem não compensa esse risco.
     return dados
 
 
@@ -249,9 +245,7 @@ def responder_inquilino(
         for bloco in blocos_tool_use:
             try:
                 if bloco.name == TOOL_BUSCAR_DADOS:
-                    resultado = _executar_buscar_dados_inquilino(
-                        contract_id, bloco.input.get("campos")
-                    )
+                    resultado = _executar_buscar_dados_inquilino(contract_id)
                 elif bloco.name == TOOL_CONSULTAR_HISTORICO:
                     resultado = _executar_consultar_historico(
                         contract_id,
@@ -278,7 +272,7 @@ def responder_inquilino(
         messages.append({"role": "user", "content": resultados_tool})
 
     # Loop estourou sem o Claude convergir pra uma resposta em texto. O
-    # fallback escala de fato pelo mesmo caminho do A5, gerando protocolo em
+    # fallback escala pelo mesmo caminho do A5, gerando protocolo em
     # `escalations` e notificando a staff.
     logger.warning(
         "A1 atingiu MAX_RODADAS_TOOL_USE (%s) sem convergir para texto — contrato %s. "
