@@ -16,6 +16,9 @@ As migrations vivem em `docs/schemas/`:
 
 - `001_create_tables.sql` — cria as 8 tabelas de negócio (contracts, contract_clauses, charges, charge_negotiations, maintenance_tickets, escalations, contract_alerts, conversation_logs), com constraints de integridade e RLS habilitado (sem políticas ainda — fail-closed proposital).
 - `002_auth_rbac_rls.sql` — cria `staff_users`, as políticas de RLS de todas as tabelas, as funções RPC de escrita do agente (`agent_update_charge_status`, `agent_open_maintenance_ticket`, `agent_create_escalation`, `agent_log_message`), o papel dedicado `agente_ia`, e o bucket privado de Storage `contracts`.
+- `007_estado_conversa_agente.sql` — tabela `agent_conversation_states` + RPCs `agent_get/set/clear_conversation_state`, genéricas para qualquer agente multi-turno (hoje só o A3 usa).
+- `008_cron_batch_cobranca.sql` — papel `cron_batch` (leitura cross-contrato, só via RPC `cron_listar_charges_ativas`, sem GRANT direto em tabela nenhuma) para os jobs agendados do A2.
+- `009_escalation_atraso_severo.sql` — adiciona `atraso_severo` à lista de `escalations.motivo`, para o cron do A2 escalar inadimplência D+15.
 
 **Rodar sempre nessa ordem** (001 antes do 002) via **SQL Editor** do dashboard: cole o conteúdo do arquivo, clique em Run, confirme "Success" antes de rodar o próximo.
 
@@ -27,7 +30,7 @@ Checklist rápido depois de rodar os dois SQLs:
 
 - **Table Editor**: as 9 tabelas presentes (8 de negócio + `staff_users`), todas com RLS habilitado.
 - **Storage**: bucket `contracts` existe e está marcado como **Private**.
-- **Database → Roles**: papel `agente_ia` presente.
+- **Database → Roles**: papéis `agente_ia` e `cron_batch` presentes.
 - **Database → Functions**: `is_staff`, `agent_contract_id`, as 4 funções RPC do agente, e `set_updated_at` presentes.
 
 ## 4. Variáveis de ambiente (`.env`)

@@ -4,22 +4,26 @@ Duas etapas:
   1. classificar_intencao (app/orchestrator/classificador.py) decide qual
      agente deve tratar a mensagem — classificação rasa e rápida, um
      system prompt curto devolvendo {agente, motivo, urgencia}.
-  2. Roteamento de fato: A1 (app/agents/a1_atendimento) e A5
-     (app/agents/a5_escalonamento) já têm lógica de agente implementada de
-     verdade. A2-A4 ainda são placeholders: as pastas
-     app/agents/{a2_cobranca,a3_manutencao,a4_gestao_contratual}/ existem
-     mas ainda não estão com a lógica de negócio ligada aqui (A3 já tem
-     implementação própria, mas depende de estado entre mensagens que o
-     orquestrador ainda não persiste — ver observação em
-     app/agents/a3_manutencao/fluxo.py). Quando cada uma ganhar essa
-     integração, o bloco correspondente abaixo passa a chamá-la — a
-     estrutura do roteamento não deveria precisar mudar.
+  2. Roteamento de fato: A1 (app/agents/a1_atendimento), A3
+     (app/agents/a3_manutencao) e A5 (app/agents/a5_escalonamento) já têm
+     lógica de agente implementada de verdade. A2 e A4 ainda são
+     placeholders: as pastas app/agents/{a2_cobranca,a4_gestao_contratual}/
+     existem mas ainda não estão com a lógica de negócio ligada aqui. Quando
+     cada uma ganhar essa integração, o bloco correspondente abaixo passa a
+     chamá-la — a estrutura do roteamento não deveria precisar mudar.
+
+     Diferença importante do A3 em relação ao A1/A5: é multi-turno (máquina
+     de estados), então depende de persistência de estado entre mensagens —
+     ver docs/schemas/007_estado_conversa_agente.sql e
+     app/agents/a3_manutencao/atendimento.py, que carrega/salva esse estado
+     a cada chamada.
 """
 
 import logging
 from typing import Optional
 
 from app.agents.a1_atendimento import responder_inquilino
+from app.agents.a3_manutencao import responder_manutencao
 from app.agents.a5_escalonamento import avaliar_escalonamento, executar_escalonamento
 from app.orchestrator.classificador import classificar_intencao
 
@@ -65,6 +69,9 @@ def rotear_mensagem(
     if classificacao.agente == "A1":
         return _rotear_para_a1(contract_id, texto, historico_conversa)
 
+    if classificacao.agente == "A3":
+        return _rotear_para_a3(contract_id, texto, historico_conversa)
+
     if classificacao.agente == "A5":
         return _rotear_para_a5(contract_id, texto, historico_conversa)
 
@@ -92,6 +99,22 @@ def _rotear_para_a1(contract_id: str, texto: str, historico_conversa: str) -> tu
             "Tente novamente em instantes."
         )
     return resposta, "A1"
+
+
+def _rotear_para_a3(contract_id: str, texto: str, historico_conversa: str) -> tuple[str, Optional[str]]:
+    """Diferente do A1 (stateless por mensagem), o A3 é uma máquina de
+    estados multi-turno — responder_manutencao carrega o estado salvo (se
+    houver), processa o turno, e persiste o estado atualizado antes de
+    devolver. Ver app/agents/a3_manutencao/atendimento.py."""
+    try:
+        resposta = responder_manutencao(contract_id, texto, historico_conversa)
+    except Exception:
+        logger.exception("Falha ao processar mensagem no A3 para contrato %s", contract_id)
+        resposta = (
+            "Desculpe, tive um problema para registrar seu chamado agora. "
+            "Tente novamente em instantes."
+        )
+    return resposta, "A3"
 
 
 def _rotear_para_a5(contract_id: str, texto: str, historico_conversa: str) -> tuple[str, Optional[str]]:
