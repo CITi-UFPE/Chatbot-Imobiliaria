@@ -4,18 +4,22 @@ Duas etapas:
   1. classificar_intencao (app/orchestrator/classificador.py) decide qual
      agente deve tratar a mensagem — classificação rasa e rápida, um
      system prompt curto devolvendo {agente, motivo, urgencia}.
-  2. Roteamento de fato: hoje só o A5 tem lógica de agente implementada de
-     verdade (app/agents/a5_escalonamento — critério próprio mais fino,
-     protocolo, notificação). A1-A4 ainda são placeholders: as pastas
-     app/agents/{a1_atendimento,a2_cobranca,a3_manutencao,
-     a4_gestao_contratual}/ existem mas estão vazias. Quando cada uma
-     ganhar lógica de negócio, o bloco correspondente abaixo passa a
-     chamá-la — a estrutura do roteamento não deveria precisar mudar.
+  2. Roteamento de fato: A1 (app/agents/a1_atendimento) e A5
+     (app/agents/a5_escalonamento) já têm lógica de agente implementada de
+     verdade. A2-A4 ainda são placeholders: as pastas
+     app/agents/{a2_cobranca,a3_manutencao,a4_gestao_contratual}/ existem
+     mas ainda não estão com a lógica de negócio ligada aqui (A3 já tem
+     implementação própria, mas depende de estado entre mensagens que o
+     orquestrador ainda não persiste — ver observação em
+     app/agents/a3_manutencao/fluxo.py). Quando cada uma ganhar essa
+     integração, o bloco correspondente abaixo passa a chamá-la — a
+     estrutura do roteamento não deveria precisar mudar.
 """
 
 import logging
 from typing import Optional
 
+from app.agents.a1_atendimento import responder_inquilino
 from app.agents.a5_escalonamento import avaliar_escalonamento, executar_escalonamento
 from app.orchestrator.classificador import classificar_intencao
 
@@ -58,17 +62,36 @@ def rotear_mensagem(
         classificacao.urgencia,
     )
 
+    if classificacao.agente == "A1":
+        return _rotear_para_a1(contract_id, texto, historico_conversa)
+
     if classificacao.agente == "A5":
         return _rotear_para_a5(contract_id, texto, historico_conversa)
 
-    # TODO: A1-A4 ainda não têm lógica de negócio implementada (pastas
-    # vazias). agente_responsavel já registra o roteamento correto mesmo
-    # sem resposta real — útil para avaliar a precisão da classificação
-    # antes desses agentes existirem.
+    # TODO: A2-A4 ainda não têm lógica de negócio ligada aqui. agente_responsavel
+    # já registra o roteamento correto mesmo sem resposta real — útil para
+    # avaliar a precisão da classificação antes desses agentes existirem.
     resposta = _RESPOSTA_AGENTE_NAO_IMPLEMENTADO.format(
         agente=classificacao.agente, motivo=classificacao.motivo
     )
     return resposta, classificacao.agente
+
+
+def _rotear_para_a1(contract_id: str, texto: str, historico_conversa: str) -> tuple[str, Optional[str]]:
+    """O A1 já faz sua própria checagem de escalonamento (chama avaliar_escalonamento
+    antes de tentar responder) e pode escalar sozinho no meio da resposta (ex:
+    pergunta sem cláusula correspondente, ou loop de tool-use sem convergir) —
+    por isso devolve sempre agente_responsavel='A1' aqui, mesmo quando o
+    resultado final foi uma escalação: quem processou a mensagem foi o A1."""
+    try:
+        resposta = responder_inquilino(contract_id, texto, historico_conversa)
+    except Exception:
+        logger.exception("Falha ao processar mensagem no A1 para contrato %s", contract_id)
+        resposta = (
+            "Desculpe, tive um problema para consultar seus dados agora. "
+            "Tente novamente em instantes."
+        )
+    return resposta, "A1"
 
 
 def _rotear_para_a5(contract_id: str, texto: str, historico_conversa: str) -> tuple[str, Optional[str]]:
