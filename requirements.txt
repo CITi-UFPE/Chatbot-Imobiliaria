@@ -11,3 +11,4 @@ redis
 python-dotenv
 pydantic
 pytest
+tzdata  # zoneinfo (app/agents/a4_gestao_contratual) não tem base IANA embutida no Windows
