@@ -24,3 +24,12 @@ app.include_router(contracts.router)
 # navegador — não passa pelo CORSMiddleware acima, que só afeta chamadas
 # feitas por browser.
 app.include_router(whatsapp.router)
+
+# Chat simulado (dev_chat): ferramenta de teste que expõe uma página HTML +
+# endpoint pra simular mensagens do WhatsApp sem a API real da Meta. Nunca
+# incluir em produção — qualquer pessoa com a URL poderia mandar mensagem
+# "como se fosse" qualquer telefone cadastrado em contracts.
+if os.environ.get("ENVIRONMENT", "development") != "production":
+    from app.api.routers import dev_chat
+
+    app.include_router(dev_chat.router)

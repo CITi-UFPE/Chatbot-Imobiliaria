@@ -29,14 +29,21 @@ from dataclasses import dataclass
 class CriterioEscalonamento:
     motivo: str
     descricao: str
-    # Itens 10 e 11 (loop_nao_resolvido, frustracao_crescente): não dá pra
-    # decidir só com a mensagem atual — precisa de estado acumulado da
-    # conversa (quantas vezes a mesma dúvida apareceu, sinais de frustração
-    # ao longo do histórico). O design formal disso (um sinal "resolvido:
-    # sim/não" por turno, mantido pelo orquestrador) ainda não existe — ver
-    # detectar_loop_ou_frustracao em escalonamento.py, que é uma aproximação
-    # heurística, não a versão final.
-    requer_estado_conversa: bool = False
+    # False para critérios que NÃO dá pra avaliar Claude só com o texto da
+    # mensagem atual — nesse caso o critério é excluído do prompt de
+    # avaliar_escalonamento (que só vê uma mensagem por vez) e detectado por
+    # outro caminho:
+    #   - loop_nao_resolvido / frustracao_crescente: precisam de estado
+    #     acumulado da conversa (quantas vezes a mesma dúvida apareceu,
+    #     sinais de frustração ao longo do histórico). O design formal disso
+    #     (um sinal "resolvido: sim/não" por turno, mantido pelo
+    #     orquestrador) ainda não existe — ver detectar_loop_ou_frustracao em
+    #     escalonamento.py, que é uma aproximação heurística, não a versão
+    #     final.
+    #   - atraso_severo: nem depende de mensagem nenhuma — é disparado pelo
+    #     cron diário do A2 (ver docs/schemas/009_escalation_atraso_severo.sql),
+    #     não por texto de conversa.
+    deteccao_via_mensagem: bool = True
 
 
 CRITERIOS: list[CriterioEscalonamento] = [
@@ -91,12 +98,19 @@ CRITERIOS: list[CriterioEscalonamento] = [
     CriterioEscalonamento(
         "loop_nao_resolvido",
         "Mesma dúvida repetida 2 vezes sem resolução.",
-        requer_estado_conversa=True,
+        deteccao_via_mensagem=False,
     ),
     CriterioEscalonamento(
         "frustracao_crescente",
         "Sinais de frustração crescente (repetição, tom alterado) ao longo da conversa.",
-        requer_estado_conversa=True,
+        deteccao_via_mensagem=False,
+    ),
+    CriterioEscalonamento(
+        "atraso_severo",
+        "Inadimplência crônica (D+15) detectada automaticamente pelo cron diário de "
+        "cobrança do A2 — aciona a gestão para ação manual. Nunca disparado a partir de "
+        "uma mensagem do inquilino.",
+        deteccao_via_mensagem=False,
     ),
 ]
 

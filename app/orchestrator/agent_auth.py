@@ -133,8 +133,10 @@ def obter_client_cron_batch(ttl_segundos: int = TTL_CRON_SEGUNDOS) -> Client:
     só leitura, só através das RPCs de listagem concedidas a esse papel.
 
     Usar exclusivamente dentro dos scripts de app/jobs/ (ex:
-    cron_alertas_contratuais.py, A4), nunca no caminho de processamento de
-    mensagem do WhatsApp — ali o token correto continua sendo o de
-    obter_client_agente(contract_id), escopado a um contrato só."""
+    cron_alertas_contratuais.py do A4, cron_cobranca_diaria.py do A2),
+    nunca no caminho de processamento de mensagem do WhatsApp — ali o token
+    correto continua sendo o de obter_client_agente(contract_id), escopado
+    a um contrato só.
+    """
     token = assinar_token_cron_batch(ttl_segundos)
     return _client_com_token(token)

@@ -47,6 +47,10 @@ MotivoEscalonamento = Literal[
     "terceiros_condominio",
     "loop_nao_resolvido",
     "frustracao_crescente",
+    # Nunca chega aqui vindo de avaliar_escalonamento (não é detectável a
+    # partir de uma mensagem — ver criterios.py) — só é usado por quem chama
+    # executar_escalonamento diretamente, como o cron do A2.
+    "atraso_severo",
 ]
 
 
@@ -68,7 +72,7 @@ class AvaliacaoEscalonamento(BaseModel):
 TOOL_NAME = "escalar_para_humano"
 
 _CRITERIOS_TEXTO = "\n".join(
-    f"- {c.motivo}: {c.descricao}" for c in CRITERIOS if not c.requer_estado_conversa
+    f"- {c.motivo}: {c.descricao}" for c in CRITERIOS if c.deteccao_via_mensagem
 )
 
 SYSTEM_PROMPT = (
@@ -81,6 +85,10 @@ SYSTEM_PROMPT = (
     "Critérios 'loop_nao_resolvido' e 'frustracao_crescente' são avaliados separadamente "
     "(dependem de padrão ao longo da conversa, não desta chamada) — não os use aqui."
 )
+# Nota: 'atraso_severo' nem entra na lista de critérios acima (não é
+# detectável por mensagem — ver criterios.py), então nunca aparece pro
+# Claude aqui. Quem dispara esse motivo é o cron do A2, chamando
+# executar_escalonamento diretamente, sem passar por avaliar_escalonamento.
 
 
 def _tool_schema() -> dict:
