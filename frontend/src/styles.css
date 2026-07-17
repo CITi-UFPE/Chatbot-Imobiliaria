@@ -1,3 +1,14 @@
+/* GestãoImob v2 — reformulação visual (Lora + Geist). Ver
+   "GestãoImob Design System" (Claude Design) para o restante dos tokens
+   (spacing/shadow já embutidos abaixo). Import remoto — não precisa de
+   arquivo de fonte local.
+   PRECISA ficar como a primeira linha do arquivo: o Lightning CSS (usado
+   pelo Vite) exige que @import venha antes de qualquer outra regra — e o
+   `@import "tailwindcss"` logo abaixo se expande em um monte de CSS nesse
+   mesmo ponto, então um @import de fonte depois dele conta como "depois
+   de outras regras" e quebra o build. */
+@import url("https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,500;0,600;1,500;1,600&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
+
 @import "tailwindcss" source(none);
 @source "../src";
 @import "tw-animate-css";
@@ -59,42 +70,115 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  /* v2 — Lora (títulos/serif) + Geist (UI/corpo) — registra font-serif /
+     font-sans / font-mono como utilities do Tailwind. */
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-serif: "Lora", "Source Serif 4", Georgia, serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.129 0.042 264.695);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.129 0.042 264.695);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.129 0.042 264.695);
-  --primary: oklch(0.208 0.042 265.755);
-  --primary-foreground: oklch(0.984 0.003 247.858);
-  --secondary: oklch(0.968 0.007 247.896);
-  --secondary-foreground: oklch(0.208 0.042 265.755);
-  --muted: oklch(0.968 0.007 247.896);
-  --muted-foreground: oklch(0.554 0.046 257.417);
-  --accent: oklch(0.968 0.007 247.896);
-  --accent-foreground: oklch(0.208 0.042 265.755);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.984 0.003 247.858);
-  --border: oklch(0.929 0.013 255.508);
-  --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.704 0.04 256.788);
+  /* ---- v2 — paleta quente editorial (GestãoImob Design System) ----
+     Trocado de oklch pra hex: mesmos tokens semânticos consumidos pelo
+     Tailwind (@theme inline acima), só muda o valor. Ver
+     "GestãoImob Design System/tokens/colors.css" pra fonte original. */
+  --ink-950: #211d18;
+  --ink-900: #2b251e;
+  --ink-700: #4a4238;
+  --ink-500: #8a8177;
+  --ink-300: #c9c0b2;
+  --ink-200: #e8e1d6;
+  --ink-100: #f3ede3;
+  --ink-50: #faf6ef;
+
+  --radius: 1rem;
+  --background: var(--ink-50);
+  --foreground: var(--ink-950);
+  --card: #ffffff;
+  --card-foreground: var(--ink-950);
+  --popover: #ffffff;
+  --popover-foreground: var(--ink-950);
+  --primary: var(--ink-950);
+  --primary-foreground: #fdfbf8;
+  --secondary: var(--ink-100);
+  --secondary-foreground: var(--ink-950);
+  --muted: var(--ink-100);
+  --muted-foreground: var(--ink-500);
+  --accent: var(--ink-100);
+  --accent-foreground: var(--ink-950);
+  --destructive: #b5432a;
+  --destructive-foreground: #fdfbf8;
+  --border: var(--ink-200);
+  --input: var(--ink-200);
+  --ring: rgba(178, 96, 46, 0.35);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.984 0.003 247.858);
-  --sidebar-foreground: oklch(0.129 0.042 264.695);
-  --sidebar-primary: oklch(0.208 0.042 265.755);
-  --sidebar-primary-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-accent: oklch(0.968 0.007 247.896);
-  --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
-  --sidebar-border: oklch(0.929 0.013 255.508);
-  --sidebar-ring: oklch(0.704 0.04 256.788);
+
+  /* ---- Sidebar ---- */
+  --sidebar: #ffffff;
+  --sidebar-foreground: var(--ink-950);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: #fdfbf8;
+  --sidebar-accent: var(--brand-soft);
+  --sidebar-accent-foreground: var(--brand-strong);
+  --sidebar-border: var(--ink-200);
+  --sidebar-ring: var(--ring);
+
+  /* ---- Marca (terracota) ---- */
+  --brand: #b5602e;
+  --brand-strong: #93491f;
+  --brand-soft: #f6e8d8;
+  --brand-soft-2: #fbebd9;
+
+  /* ---- Paleta de status (pills/callouts) — usar via as classes
+     utilitárias .status-* definidas mais abaixo, nunca escolher cor
+     "à mão" de novo num componente. ---- */
+  --success-bg: #e8f0de;
+  --success-fg: #5b7c4a;
+  --success-border: #d7e6c8;
+  --success-surface: #f2f7ec;
+  --success-accent: #6b8f5a;
+  --success-strong: #3f5a32;
+
+  --warning-bg: #fbebd9;
+  --warning-fg: #a15f22;
+  --warning-border: #f3d9b6;
+  --warning-surface: #fdf4e7;
+  --warning-accent: #c2792f;
+  --warning-strong: #7a3f14;
+
+  --info-bg: #e3edee;
+  --info-fg: #3d6b74;
+  --info-border: #cddfe0;
+  --info-surface: #eef5f5;
+  --info-strong: #274b52;
+
+  --danger-fg: #b5432a;
+  --danger-surface: #fbeae5;
+
+  --neutral-bg: var(--ink-100);
+  --neutral-fg: var(--ink-500);
+  --neutral-border: var(--ink-200);
+
+  /* ---- Ícone-tile (stat cards) ---- */
+  --tile-a-bg: var(--brand-soft);      --tile-a-fg: var(--brand-strong);
+  --tile-b-bg: var(--brand-soft-2);    --tile-b-fg: var(--brand);
+  --tile-c-bg: var(--warning-surface); --tile-c-fg: var(--warning-accent);
+  --tile-d-bg: var(--ink-100);         --tile-d-fg: var(--success-accent);
+
+  /* ---- Categorias de manutenção ---- */
+  --cat-eletrica-bg: var(--warning-surface);   --cat-eletrica-fg: var(--warning-accent);
+  --cat-hidraulica-bg: var(--info-surface);    --cat-hidraulica-fg: var(--info-fg);
+  --cat-estrutural-bg: var(--brand-soft);      --cat-estrutural-fg: var(--brand-strong);
+  --cat-pintura-bg: #efe6ef;                   --cat-pintura-fg: #7a4a72;
+  --cat-outros-bg: var(--ink-100);             --cat-outros-fg: var(--ink-700);
+
+  --avatar-bg: var(--ink-100);
+  --avatar-fg: var(--ink-700);
 }
 
 .dark {
@@ -140,5 +224,51 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
   }
+}
+
+/* v2 — classes de status/categoria, pra nunca mais escolher cor "à mão"
+   num componente (mesma doutrina do StatusBadge do design system: emerald/
+   sage = sucesso, âmbar = atenção, azul/teal = informativo, vermelho =
+   destrutivo, cinza = neutro/inativo). Puramente visual — cada seção só
+   troca a className, a condição que decide qual classe usar continua a
+   mesma. */
+@layer components {
+  .status-success {
+    background-color: var(--success-bg);
+    color: var(--success-fg);
+    border-color: var(--success-border);
+  }
+  .status-warning {
+    background-color: var(--warning-bg);
+    color: var(--warning-fg);
+    border-color: var(--warning-border);
+  }
+  .status-info {
+    background-color: var(--info-bg);
+    color: var(--info-fg);
+    border-color: var(--info-border);
+  }
+  .status-danger {
+    background-color: var(--danger-surface);
+    color: var(--danger-fg);
+  }
+  .status-neutral {
+    background-color: var(--neutral-bg);
+    color: var(--neutral-fg);
+    border-color: var(--neutral-border);
+  }
+
+  .cat-eletrica { background-color: var(--cat-eletrica-bg); color: var(--cat-eletrica-fg); }
+  .cat-hidraulica { background-color: var(--cat-hidraulica-bg); color: var(--cat-hidraulica-fg); }
+  .cat-estrutural { background-color: var(--cat-estrutural-bg); color: var(--cat-estrutural-fg); }
+  .cat-pintura { background-color: var(--cat-pintura-bg); color: var(--cat-pintura-fg); }
+  .cat-outros { background-color: var(--cat-outros-bg); color: var(--cat-outros-fg); }
+}
+
+/* Números tabulares — tabelas de dinheiro/consumo (Água, Cobranças). */
+.tnum {
+  font-variant-numeric: tabular-nums;
 }

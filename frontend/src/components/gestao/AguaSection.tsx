@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Info, Zap, Save, Loader2 } from "lucide-react";
 import { PageHeader } from "./PageHeader";
+import { Avatar } from "./Avatar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -124,8 +125,8 @@ export function AguaSection() {
       <Card className="mb-6">
         <CardContent className="flex items-center justify-between gap-4 py-4">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-              <Zap className="h-5 w-5 text-primary" />
+            <div className="h-10 w-10 rounded-lg bg-[var(--brand-soft)] flex items-center justify-center">
+              <Zap className="h-5 w-5 text-[var(--brand-strong)]" />
             </div>
             <div>
               <div className="font-medium">Usar integração automática (Fonte Digital)</div>
@@ -138,7 +139,7 @@ export function AguaSection() {
         </CardContent>
       </Card>
 
-      <div className="rounded-lg border bg-blue-50 border-blue-200 p-3 mb-6 flex items-start gap-2 text-sm text-blue-900">
+      <div className="rounded-lg border bg-[var(--info-bg)] border-[var(--info-border)] p-3 mb-6 flex items-start gap-2 text-sm text-[var(--info-strong)]">
         <Info className="h-4 w-4 mt-0.5 shrink-0" />
         <span>
           Fórmula aplicada: <strong>(Consumo × R$ 6,18) + R$ 5,00</strong>. A cobrança de água será
@@ -184,7 +185,12 @@ export function AguaSection() {
                   return (
                     <tr key={l.contractId} className="border-t hover:bg-muted/20">
                       <td className="px-6 py-4 font-medium">{l.imovel}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{l.inquilino}</td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-2.5">
+                          <Avatar name={l.inquilino} size={28} />
+                          <span className="text-muted-foreground">{l.inquilino}</span>
+                        </div>
+                      </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
                           <Input
@@ -208,7 +214,7 @@ export function AguaSection() {
                       </td>
                       <td className="px-6 py-4 text-right">
                         {total !== null ? (
-                          <span className="font-semibold text-primary">
+                          <span className="font-semibold text-primary tnum">
                             R$ {total.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                           </span>
                         ) : (

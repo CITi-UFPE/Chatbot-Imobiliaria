@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageCircle } from "lucide-react";
+import { MessageCircle, HandCoins, Wallet } from "lucide-react";
 import { PageHeader } from "./PageHeader";
+import { StatTile } from "./StatTile";
+import { Avatar } from "./Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -150,6 +152,22 @@ export function CobrancasSection() {
         title="Cobranças em Negociação"
         description="Gerencie perdões, descontos parciais e negações."
       />
+      <div className="grid gap-4 sm:grid-cols-2 mb-6">
+        <StatTile
+          tone="c"
+          icon={<HandCoins className="h-5 w-5" />}
+          label="Em Negociação"
+          value={items.length}
+          sublabel="cobranças pendentes"
+        />
+        <StatTile
+          tone="b"
+          icon={<Wallet className="h-5 w-5" />}
+          label="Valor Total"
+          value={`R$ ${items.reduce((acc, n) => acc + n.valor, 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
+          sublabel="somado das negociações"
+        />
+      </div>
       {isError && (
         <p className="text-sm text-destructive mb-4">
           Não foi possível carregar as cobranças em negociação. Verifique sua sessão e tente novamente.
@@ -166,11 +184,14 @@ export function CobrancasSection() {
           return (
             <Card key={n.chargeId}>
               <CardHeader className="flex flex-row items-start justify-between space-y-0">
-                <div>
-                  <CardTitle className="text-base">{n.inquilino}</CardTitle>
-                  <p className="text-sm text-muted-foreground mt-1">{n.imovel}</p>
+                <div className="flex items-center gap-3">
+                  <Avatar name={n.inquilino} size={36} />
+                  <div>
+                    <CardTitle className="text-base">{n.inquilino}</CardTitle>
+                    <p className="text-sm text-muted-foreground mt-1">{n.imovel}</p>
+                  </div>
                 </div>
-                <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">
+                <Badge className="border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning-fg)] hover:bg-[var(--warning-bg)]">
                   Em Negociação
                 </Badge>
               </CardHeader>
@@ -182,7 +203,7 @@ export function CobrancasSection() {
                   </div>
                   <div>
                     <div className="text-xs uppercase text-muted-foreground">Valor Original</div>
-                    <div className="font-semibold text-lg">
+                    <div className="font-semibold text-lg tnum">
                       R$ {n.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                     </div>
                   </div>

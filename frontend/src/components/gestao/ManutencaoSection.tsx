@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Zap, Droplet, Hammer, Paintbrush, Wrench, CheckCircle2, Save, Loader2 } from "lucide-react";
+import { Zap, Droplet, Hammer, Paintbrush, Wrench, CheckCircle2, Save, Loader2, ClipboardList, AlertCircle } from "lucide-react";
 import { PageHeader } from "./PageHeader";
+import { StatTile } from "./StatTile";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,11 +59,11 @@ const labelMap: Record<MaintenanceCategoria, string> = {
 };
 
 const colorMap: Record<MaintenanceCategoria, string> = {
-  eletrica: "bg-amber-100 text-amber-700",
-  hidraulica: "bg-sky-100 text-sky-700",
-  estrutural: "bg-orange-100 text-orange-700",
-  pintura: "bg-violet-100 text-violet-700",
-  outros: "bg-slate-100 text-slate-700",
+  eletrica: "cat-eletrica",
+  hidraulica: "cat-hidraulica",
+  estrutural: "cat-estrutural",
+  pintura: "cat-pintura",
+  outros: "cat-outros",
 };
 
 export function ManutencaoSection() {
@@ -125,6 +126,30 @@ export function ManutencaoSection() {
         description="Tickets abertos automaticamente pelo sistema A3. Registre observações do prestador e feche quando concluído."
       />
 
+      <div className="grid gap-4 sm:grid-cols-3 mb-6">
+        <StatTile
+          tone="a"
+          icon={<ClipboardList className="h-5 w-5" />}
+          label="Total de Tickets"
+          value={tickets.length}
+          sublabel="no total"
+        />
+        <StatTile
+          tone="c"
+          icon={<AlertCircle className="h-5 w-5" />}
+          label="Abertos"
+          value={tickets.filter((t) => t.status !== "resolvido").length}
+          sublabel="aguardando resolução"
+        />
+        <StatTile
+          tone="d"
+          icon={<CheckCircle2 className="h-5 w-5" />}
+          label="Resolvidos"
+          value={tickets.filter((t) => t.status === "resolvido").length}
+          sublabel="concluídos"
+        />
+      </div>
+
       {isError && (
         <p className="text-sm text-destructive mb-4">
           Não foi possível carregar os tickets. Verifique sua sessão e tente novamente.
@@ -153,7 +178,7 @@ export function ManutencaoSection() {
                   </div>
                 </div>
                 {resolvido ? (
-                  <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">Resolvido</Badge>
+                  <Badge className="border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success-fg)] hover:bg-[var(--success-bg)]">Resolvido</Badge>
                 ) : (
                   <Badge variant="outline">{t.status === "em_andamento" ? "Em andamento" : "Aberto"}</Badge>
                 )}
