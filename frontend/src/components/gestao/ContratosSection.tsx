@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   CheckCircle2,
+  Clock,
   CloudUpload,
   FileText,
   Loader2,
@@ -11,6 +12,8 @@ import {
   Upload,
 } from "lucide-react";
 import { PageHeader } from "./PageHeader";
+import { StatTile } from "./StatTile";
+import { Avatar } from "./Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -153,6 +156,30 @@ export function ContratosSection() {
           description="Gerencie imóveis cadastrados e faça o upload de novos contratos com extração automática por IA."
         />
 
+        <div className="grid gap-4 sm:grid-cols-3 mb-6">
+          <StatTile
+            tone="a"
+            icon={<FileText className="h-5 w-5" />}
+            label="Imóveis Cadastrados"
+            value={imoveis.length}
+            sublabel="no total"
+          />
+          <StatTile
+            tone="d"
+            icon={<CheckCircle2 className="h-5 w-5" />}
+            label="Contratos Ativos"
+            value={imoveis.filter((i) => i.status === "ativo").length}
+            sublabel="em vigência"
+          />
+          <StatTile
+            tone="c"
+            icon={<Clock className="h-5 w-5" />}
+            label="Pendentes"
+            value={imoveis.filter((i) => i.status === "pendente_confirmacao").length}
+            sublabel="aguardando confirmação"
+          />
+        </div>
+
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Imóveis Cadastrados</CardTitle>
@@ -179,15 +206,22 @@ export function ContratosSection() {
                 <tbody>
                   {imoveis.map((im) => (
                     <tr key={im.id} className="border-t hover:bg-muted/30 transition-colors">
-                      <td className="px-6 py-4 font-medium">{im.imovel_endereco}</td>
-                      <td className="px-6 py-4 text-muted-foreground">{im.inquilino_nome}</td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={im.inquilino_nome} size={34} />
+                          <div>
+                            <div className="font-medium">{im.inquilino_nome}</div>
+                            <div className="text-xs text-muted-foreground">{im.imovel_endereco}</div>
+                          </div>
+                        </div>
+                      </td>
                       <td className="px-6 py-4">
                         {im.status === "ativo" ? (
-                          <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100 border-emerald-200">
+                          <Badge className="border-[var(--success-border)] bg-[var(--success-bg)] text-[var(--success-fg)] hover:bg-[var(--success-bg)]">
                             Ativo
                           </Badge>
                         ) : im.status === "pendente_confirmacao" ? (
-                          <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100 border-amber-200">
+                          <Badge className="border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning-fg)] hover:bg-[var(--warning-bg)]">
                             Pendente de confirmação
                           </Badge>
                         ) : (
@@ -490,22 +524,22 @@ function UploadWizard({
 
         {step === 2 && dados && (
           <div className="space-y-4">
-            <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-4 flex gap-3">
-              <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0 mt-0.5" />
+            <div className="rounded-lg bg-[var(--success-bg)] border border-[var(--success-border)] p-4 flex gap-3">
+              <CheckCircle2 className="h-5 w-5 text-[var(--success-accent)] shrink-0 mt-0.5" />
               <div className="text-sm">
-                <div className="font-medium text-emerald-800">Extração concluída pela Claude API</div>
-                <div className="text-emerald-700">
+                <div className="font-medium text-[var(--success-strong)]">Extração concluída pela Claude API</div>
+                <div className="text-[var(--success-fg)]">
                   {clausulas.length} cláusulas identificadas. Revise no próximo passo.
                 </div>
               </div>
             </div>
 
             {duplicado && (
-              <div className="rounded-lg bg-amber-50 border-2 border-amber-300 p-4 flex gap-3 animate-pulse">
-                <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="rounded-lg bg-[var(--warning-bg)] border-2 border-[var(--warning-accent)] p-4 flex gap-3 animate-pulse">
+                <AlertCircle className="h-5 w-5 text-[var(--warning-accent)] shrink-0 mt-0.5" />
                 <div className="text-sm">
-                  <div className="font-bold text-amber-900">⚠ Contrato duplicado detectado</div>
-                  <div className="text-amber-800">
+                  <div className="font-bold text-[var(--warning-strong)]">⚠ Contrato duplicado detectado</div>
+                  <div className="text-[var(--warning-fg)]">
                     Já existe um contrato <strong>ativo</strong> para o imóvel{" "}
                     <strong>{dados.imovel_endereco}</strong>. Verifique antes de prosseguir.
                   </div>

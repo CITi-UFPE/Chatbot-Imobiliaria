@@ -28,7 +28,7 @@ export function AppSidebar({
           <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
             <Building2 className="h-5 w-5 text-primary-foreground" />
           </div>
-          <span className="font-semibold">GestãoImob</span>
+          <span className="font-serif font-medium">GestãoImob</span>
         </div>
         <button
           onClick={() => setMobileOpen((v) => !v)}
@@ -54,7 +54,7 @@ export function AppSidebar({
             <Building2 className="h-5 w-5 text-primary-foreground" />
           </div>
           <div>
-            <div className="font-semibold leading-tight">GestãoImob</div>
+            <div className="font-serif font-medium leading-tight">GestãoImob</div>
             <div className="text-xs text-muted-foreground">Painel Administrativo</div>
           </div>
         </div>
@@ -83,6 +83,21 @@ export function AppSidebar({
             );
           })}
         </nav>
+
+        {/* Cartão decorativo — só imagem/legenda genérica, não representa
+            nenhum imóvel real do banco nem tem ação clicável. */}
+        <div className="mx-3 mb-4 rounded-xl overflow-hidden border bg-card">
+          <div
+            className="h-24 w-full bg-cover bg-center bg-muted"
+            style={{
+              backgroundImage:
+                "url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?auto=format&fit=crop&w=600&q=80')",
+            }}
+          />
+          <div className="px-3 py-2.5 text-xs text-muted-foreground">
+            Gestão simplificada, em um só lugar.
+          </div>
+        </div>
 
         <div className="p-4 border-t text-xs text-muted-foreground">
           <div className="font-medium text-foreground">Admin Imobiliária</div>

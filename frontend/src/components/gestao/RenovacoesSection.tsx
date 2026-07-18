@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
+import { Avatar } from "./Avatar";
 import { supabase } from "@/lib/supabase";
 
 const CONTRATOS_ATIVOS_KEY = ["contratos-ativos-reajuste"] as const;
@@ -154,9 +155,12 @@ function ReajustesManuaisSection() {
             <Card key={c.id}>
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between">
-                  <div>
-                    <CardTitle className="text-base">{c.inquilino}</CardTitle>
-                    <p className="text-xs text-muted-foreground mt-0.5">{c.imovel}</p>
+                  <div className="flex items-center gap-3">
+                    <Avatar name={c.inquilino} size={34} />
+                    <div>
+                      <CardTitle className="text-base">{c.inquilino}</CardTitle>
+                      <p className="text-xs text-muted-foreground mt-0.5">{c.imovel}</p>
+                    </div>
                   </div>
                   <Badge variant="secondary">Ativo</Badge>
                 </div>
@@ -164,7 +168,7 @@ function ReajustesManuaisSection() {
               <CardContent className="space-y-3">
                 <div className="rounded-lg bg-muted/30 p-3">
                   <div className="text-xs uppercase text-muted-foreground">Valor atual</div>
-                  <div className="font-semibold">{brl(c.valorAtual)}</div>
+                  <div className="font-semibold tnum">{brl(c.valorAtual)}</div>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor={`man-${c.id}`}>Novo valor (R$)</Label>
@@ -277,17 +281,18 @@ function ReajustesAniversarioSection() {
               <Card key={a.alertId}>
                 <CardHeader className="flex flex-row items-start justify-between space-y-0">
                   <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <Sparkles className="h-5 w-5 text-primary" />
-                    </div>
+                    <Avatar name={a.inquilino} size={40} />
                     <div>
-                      <CardTitle className="text-base">{a.inquilino}</CardTitle>
+                      <CardTitle className="text-base flex items-center gap-1.5">
+                        {a.inquilino}
+                        <Sparkles className="h-3.5 w-3.5 text-[var(--brand-strong)]" />
+                      </CardTitle>
                       <p className="text-xs text-muted-foreground">
                         Aniversário: {new Date(a.dataDisparo).toLocaleDateString("pt-BR")}
                       </p>
                     </div>
                   </div>
-                  <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">
+                  <Badge className="border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning-fg)] hover:bg-[var(--warning-bg)]">
                     Faltam {dias} {dias === 1 ? "dia" : "dias"}
                   </Badge>
                 </CardHeader>
@@ -295,18 +300,18 @@ function ReajustesAniversarioSection() {
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm bg-muted/30 rounded-lg p-4">
                     <div>
                       <div className="text-xs uppercase text-muted-foreground">Valor atual</div>
-                      <div className="font-semibold">{brl(a.valorAtual)}</div>
+                      <div className="font-semibold tnum">{brl(a.valorAtual)}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase text-muted-foreground">Taxa do contrato</div>
-                      <div className="font-semibold flex items-center gap-1 text-emerald-700">
+                      <div className="font-semibold flex items-center gap-1 tnum text-[var(--success-accent)]">
                         <TrendingUp className="h-3.5 w-3.5" />
                         {(a.percentualReajuste ?? 0).toFixed(2)}%
                       </div>
                     </div>
                     <div>
                       <div className="text-xs uppercase text-muted-foreground">Valor sugerido</div>
-                      <div className="font-semibold text-primary">{brl(sugerido)}</div>
+                      <div className="font-semibold text-primary tnum">{brl(sugerido)}</div>
                     </div>
                   </div>
 
@@ -469,34 +474,35 @@ function RenovacaoSection() {
               <Card key={a.alertId}>
                 <CardHeader className="flex flex-row items-start justify-between space-y-0">
                   <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                      <CalendarClock className="h-5 w-5 text-primary" />
-                    </div>
+                    <Avatar name={a.inquilino} size={40} />
                     <div>
-                      <CardTitle className="text-base">{a.inquilino}</CardTitle>
+                      <CardTitle className="text-base flex items-center gap-1.5">
+                        {a.inquilino}
+                        <CalendarClock className="h-3.5 w-3.5 text-[var(--info-strong)]" />
+                      </CardTitle>
                       <p className="text-xs text-muted-foreground">
                         Término: {new Date(a.dataDisparo).toLocaleDateString("pt-BR")}
                       </p>
                     </div>
                   </div>
-                  <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">D-60 Renovação</Badge>
+                  <Badge className="border-[var(--info-border)] bg-[var(--info-bg)] text-[var(--info-fg)] hover:bg-[var(--info-bg)]">D-60 Renovação</Badge>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm bg-muted/30 rounded-lg p-4">
                     <div>
                       <div className="text-xs uppercase text-muted-foreground">Valor Atual</div>
-                      <div className="font-semibold">{brl(a.valorAtual)}</div>
+                      <div className="font-semibold tnum">{brl(a.valorAtual)}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase text-muted-foreground">Reajuste</div>
-                      <div className="font-semibold flex items-center gap-1 text-emerald-700">
+                      <div className="font-semibold flex items-center gap-1 tnum text-[var(--success-accent)]">
                         <TrendingUp className="h-3.5 w-3.5" />
                         {(a.percentualReajuste ?? 0).toFixed(2)}%
                       </div>
                     </div>
                     <div>
                       <div className="text-xs uppercase text-muted-foreground">Valor Sugerido</div>
-                      <div className="font-semibold text-primary">{brl(sugerido)}</div>
+                      <div className="font-semibold text-primary tnum">{brl(sugerido)}</div>
                     </div>
                   </div>
 

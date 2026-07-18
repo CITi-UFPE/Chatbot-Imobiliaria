@@ -31,13 +31,14 @@ export function LoginScreen() {
   };
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-muted/30 px-4">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen w-full grid md:grid-cols-[minmax(0,26rem)_1fr] bg-background">
+      <div className="flex items-center justify-center px-4 py-10">
+      <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-8">
           <div className="h-14 w-14 rounded-2xl bg-primary flex items-center justify-center shadow-sm">
             <Building2 className="h-7 w-7 text-primary-foreground" />
           </div>
-          <h1 className="mt-4 text-2xl font-semibold">GestãoImob</h1>
+          <h1 className="mt-4 text-2xl font-serif font-medium">GestãoImob</h1>
           <p className="text-sm text-muted-foreground">Painel Administrativo</p>
         </div>
 
@@ -100,6 +101,29 @@ export function LoginScreen() {
         <p className="text-center text-xs text-muted-foreground mt-6">
           v1.0 · Acesso restrito à equipe autorizada
         </p>
+      </div>
+      </div>
+
+      {/* Painel decorativo — só imagem/tagline de marca, sem nenhum dado ou
+          funcionalidade real por trás (nada aqui reflete o banco). Some no
+          mobile (md:grid-cols acima já reserva essa coluna só a partir de md). */}
+      <div className="hidden md:block relative overflow-hidden bg-primary">
+        <div
+          className="absolute inset-0 bg-cover bg-center"
+          style={{
+            backgroundImage:
+              "url('https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1400&q=80')",
+          }}
+        />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/10 to-black/60" />
+        <div className="absolute left-10 right-10 bottom-10">
+          <p className="font-serif text-2xl font-medium text-white leading-tight max-w-sm">
+            Simplifique a gestão dos seus imóveis.
+          </p>
+          <p className="text-sm text-white/80 mt-2 max-w-xs">
+            Contratos, cobranças, manutenção e reajustes — tudo centralizado em um só painel.
+          </p>
+        </div>
       </div>
     </div>
   );
