@@ -6,28 +6,51 @@ Duas etapas:
      system prompt curto devolvendo {agente, motivo, urgencia}.
   2. Roteamento de fato: A1 (app/agents/a1_atendimento), A3
      (app/agents/a3_manutencao) e A5 (app/agents/a5_escalonamento) já têm
-     lógica de agente implementada de verdade. A2 e A4 ainda são
-     placeholders: as pastas app/agents/{a2_cobranca,a4_gestao_contratual}/
-     existem mas ainda não estão com a lógica de negócio ligada aqui. Quando
-     cada uma ganhar essa integração, o bloco correspondente abaixo passa a
-     chamá-la — a estrutura do roteamento não deveria precisar mudar.
+     lógica de agente implementada de verdade. A4 ainda é placeholder pra
+     mensagem de conversa (é só cron, não reage a texto — ver
+     app/agents/a4_gestao_contratual/fluxo.py). Quando ganhar essa
+     integração, o bloco correspondente abaixo passa a chamá-la.
 
      Diferença importante do A3 em relação ao A1/A5: é multi-turno (máquina
      de estados), então depende de persistência de estado entre mensagens —
      ver docs/schemas/007_estado_conversa_agente.sql e
      app/agents/a3_manutencao/atendimento.py, que carrega/salva esse estado
      a cada chamada.
+
+  O A2 (app/agents/a2_cobranca) É DIFERENTE dos outros: não é acionado por
+  texto classificado, e sim por TIPO de mensagem — imagem/PDF (comprovante)
+  ou clique de botão interativo (decisão da Fernanda). Por isso não entra em
+  rotear_mensagem/classificar_intencao; app/orchestrator/processar_mensagem.py
+  decide o tipo de mensagem ANTES de chegar aqui e chama
+  rotear_comprovante_a2/rotear_clique_botao_a2 diretamente, pulando a
+  classificação de texto (não haveria texto pra classificar numa imagem).
 """
 
 import logging
 from typing import Optional
 
 from app.agents.a1_atendimento import responder_inquilino
+from app.agents.a2_cobranca import EntradaA2, TipoEntradaA2, processar_entrada_a2
+from app.agents.a2_cobranca.button_ids import (
+    ACAO_COMBINADO_TODOS,
+    ACAO_CONFIRMAR,
+    ACAO_DIVERGENTE,
+    decodificar_button_id,
+)
 from app.agents.a3_manutencao import responder_manutencao
 from app.agents.a5_escalonamento import avaliar_escalonamento, executar_escalonamento
 from app.orchestrator.classificador import classificar_intencao
 
 logger = logging.getLogger(__name__)
+
+_RESPOSTA_A2_COMPROVANTE_RECEBIDO = (
+    "Recebemos seu comprovante! Vamos confirmar e te avisamos assim que possível."
+)
+
+_RESPOSTA_A2_COMPROVANTE_ERRO = (
+    "Desculpe, tive um problema para processar seu comprovante agora. "
+    "Ele foi registrado, mas pode ser necessário reenviar — nossa equipe vai verificar."
+)
 
 _RESPOSTA_AGENTE_NAO_IMPLEMENTADO = (
     "Recebido! Sua mensagem foi identificada como assunto do Agente {agente} ({motivo}), "
@@ -133,3 +156,84 @@ def _rotear_para_a5(contract_id: str, texto: str, historico_conversa: str) -> tu
         return f"{avaliacao.resposta_para_inquilino} (protocolo {protocolo})", "A5"
 
     return _RESPOSTA_A5_SEM_CRITERIO, "A5"
+
+
+def rotear_comprovante_a2(
+    contract_id: str, imagem_base64: str, media_type: str
+) -> tuple[str, Optional[str]]:
+    """Chamado direto por app/orchestrator/processar_mensagem.py quando a
+    mensagem do inquilino é uma imagem/PDF — não passa por
+    classificar_intencao (não há texto pra classificar). A resposta aqui é
+    só um reconhecimento imediato pro inquilino; a confirmação de fato
+    (pagamento aceito/divergente) chega depois, quando a Fernanda decidir
+    pelo botão — ver app/agents/a2_cobranca/comprovante.py."""
+    try:
+        processar_entrada_a2(
+            EntradaA2(
+                tipo_entrada=TipoEntradaA2.COMPROVANTE_RECEBIDO,
+                contract_id=contract_id,
+                imagem_base64=imagem_base64,
+                media_type=media_type,
+            )
+        )
+    except Exception:
+        logger.exception("Falha ao processar comprovante no A2 para contrato %s", contract_id)
+        return _RESPOSTA_A2_COMPROVANTE_ERRO, "A2"
+
+    return _RESPOSTA_A2_COMPROVANTE_RECEBIDO, "A2"
+
+
+def rotear_clique_botao_a2(button_id: str) -> str:
+    """Chamado direto por app/orchestrator/processar_mensagem.py quando a
+    mensagem recebida é um clique de botão interativo. Diferente de todo o
+    resto deste módulo: quem clicou é a FERNANDA (staff), não um inquilino
+    numa conversa de contrato — por isso não recebe contract_id como
+    parâmetro (não existe telefone de inquilino pra resolver aqui) e não
+    passa por agent_log_message (isso é uma ação administrativa, não uma
+    mensagem de conversa). contract_id/charge_id(s) vêm decodificados do
+    próprio button_id — ver app/agents/a2_cobranca/button_ids.py.
+
+    Devolve só um texto curto (log/debug), não uma resposta de chat."""
+    decodificado = decodificar_button_id(button_id)
+    if decodificado is None:
+        logger.warning("Clique de botão do A2 com id não reconhecido: %r", button_id)
+        return "Não consegui reconhecer essa ação — verifique manualmente no banco."
+
+    try:
+        if decodificado.acao == ACAO_CONFIRMAR:
+            processar_entrada_a2(
+                EntradaA2(
+                    tipo_entrada=TipoEntradaA2.CONFIRMACAO_FERNANDA,
+                    contract_id=decodificado.contract_id,
+                    charge_id=decodificado.charge_ids[0],
+                )
+            )
+            return "Pagamento confirmado."
+
+        if decodificado.acao == ACAO_DIVERGENTE:
+            processar_entrada_a2(
+                EntradaA2(
+                    tipo_entrada=TipoEntradaA2.DIVERGENCIA_FERNANDA,
+                    contract_id=decodificado.contract_id,
+                    charge_id=decodificado.charge_ids[0],
+                )
+            )
+            return "Marcado como divergente — resolva diretamente com o inquilino."
+
+        if decodificado.acao == ACAO_COMBINADO_TODOS:
+            processar_entrada_a2(
+                EntradaA2(
+                    tipo_entrada=TipoEntradaA2.PAGAMENTO_COMBINADO_CONFIRMADO,
+                    contract_id=decodificado.contract_id,
+                    charge_ids=decodificado.charge_ids,
+                )
+            )
+            return "Pagamento combinado confirmado — todas as cobranças envolvidas foram quitadas."
+    except Exception:
+        logger.exception("Falha ao processar clique de botão do A2: %r", button_id)
+        return "Tive um problema para registrar essa ação — verifique manualmente no banco."
+
+    # Inalcançável: decodificar_button_id já filtra pra só as 3 ações acima
+    # (ACAO_COMBINADO_PARCIAL nunca é decodificado — ver button_ids.py).
+    # Mantido por defesa em profundidade.
+    return "Ação reconhecida mas ainda não implementada."
