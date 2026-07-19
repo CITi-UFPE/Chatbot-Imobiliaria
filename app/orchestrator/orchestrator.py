@@ -24,13 +24,22 @@ Duas etapas:
   decide o tipo de mensagem ANTES de chegar aqui e chama
   rotear_comprovante_a2/rotear_clique_botao_a2 diretamente, pulando a
   classificação de texto (não haveria texto pra classificar numa imagem).
+
+  Exceção pontual a essa separação: quando o A5 (via _rotear_para_a5 abaixo)
+  identifica motivo='desconto_renegociacao', este módulo chama
+  pausar_charges_em_negociacao (API pública do A2) — é aqui, não no A1, que
+  o escalonamento de fato acontece no caminho principal (o classificador já
+  manda pedido de desconto/renegociação direto pro A5, nunca pro A1 — ver
+  SYSTEM_PROMPT de classificador.py). `charges` continua sendo dado do
+  domínio do A2; este módulo só decide QUANDO chamar, não COMO a pausa é
+  feita.
 """
 
 import logging
 from typing import Optional
 
 from app.agents.a1_atendimento import responder_inquilino
-from app.agents.a2_cobranca import EntradaA2, TipoEntradaA2, processar_entrada_a2
+from app.agents.a2_cobranca import EntradaA2, TipoEntradaA2, pausar_charges_em_negociacao, processar_entrada_a2
 from app.agents.a2_cobranca.button_ids import (
     ACAO_COMBINADO_TODOS,
     ACAO_CONFIRMAR,
@@ -144,7 +153,14 @@ def _rotear_para_a5(contract_id: str, texto: str, historico_conversa: str) -> tu
     """O A5 tem critério próprio mais fino (13 motivos objetivos, ver
     app/agents/a5_escalonamento/criterios.py) para decidir SE de fato escala
     e POR QUÊ — a classificação do orquestrador só decide que o assunto é da
-    alçada do A5, não qual motivo específico nem se realmente deve escalar."""
+    alçada do A5, não qual motivo específico nem se realmente deve escalar.
+
+    Quando o motivo for 'desconto_renegociacao', também aciona
+    pausar_charges_em_negociacao (API pública do A2) — é aqui, e não no A1,
+    que esse gancho pertence: o classificador já manda pedido de
+    desconto/renegociação direto pro A5 (ver SYSTEM_PROMPT de
+    classificador.py), então é este é o caminho que de fato roda no fluxo
+    principal."""
     try:
         avaliacao = avaliar_escalonamento(texto, historico_conversa)
     except Exception:
@@ -153,6 +169,8 @@ def _rotear_para_a5(contract_id: str, texto: str, historico_conversa: str) -> tu
 
     if avaliacao is not None:
         protocolo = executar_escalonamento(contract_id, avaliacao)
+        if avaliacao.motivo == "desconto_renegociacao":
+            pausar_charges_em_negociacao(contract_id)
         return f"{avaliacao.resposta_para_inquilino} (protocolo {protocolo})", "A5"
 
     return _RESPOSTA_A5_SEM_CRITERIO, "A5"
