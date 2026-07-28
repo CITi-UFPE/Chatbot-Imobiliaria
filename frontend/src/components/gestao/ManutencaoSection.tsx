@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Zap, Droplet, Hammer, Paintbrush, Wrench, CheckCircle2, Save, Loader2, ClipboardList, AlertCircle } from "lucide-react";
+import { Zap, Droplet, Hammer, Paintbrush, Wrench, CheckCircle2, Save, Loader2, ClipboardList, AlertCircle, History, ListFilter } from "lucide-react";
 import { PageHeader } from "./PageHeader";
 import { StatTile } from "./StatTile";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,14 @@ import { supabase } from "@/lib/supabase";
 import type { MaintenanceCategoria, MaintenanceStatus } from "@/lib/database.types";
 
 const MANUTENCAO_QUERY_KEY = ["maintenance-tickets"] as const;
+const MANUTENCAO_STATS_QUERY_KEY = ["maintenance-tickets-stats"] as const;
+
+// Teto do histórico completo: pensando em escala, não faz sentido puxar
+// todo ticket resolvido desde o início dos tempos de uma vez só. 100 dá
+// bastante margem pro uso atual sem virar paginação de verdade — se o
+// volume crescer a ponto de isso ficar curto, aí sim vale investir numa
+// paginação real.
+const LIMITE_HISTORICO = 100;
 
 interface Ticket {
   id: string;
@@ -24,11 +32,44 @@ interface Ticket {
   status: MaintenanceStatus;
 }
 
-async function fetchTickets(): Promise<Ticket[]> {
-  const { data, error } = await supabase
+interface TicketStats {
+  total: number;
+  abertos: number;
+  resolvidos: number;
+}
+
+async function fetchTicketStats(): Promise<TicketStats> {
+  const [totalRes, resolvidosRes] = await Promise.all([
+    supabase.from("maintenance_tickets").select("id", { count: "exact", head: true }),
+    supabase
+      .from("maintenance_tickets")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "resolvido"),
+  ]);
+  if (totalRes.error) throw totalRes.error;
+  if (resolvidosRes.error) throw resolvidosRes.error;
+
+  const total = totalRes.count ?? 0;
+  const resolvidos = resolvidosRes.count ?? 0;
+  return { total, resolvidos, abertos: total - resolvidos };
+}
+
+// incluirResolvidos=false (padrão) mostra só o que ainda precisa de ação
+// (aberto/em_andamento). true traz o histórico completo, com um limite —
+// ver LIMITE_HISTORICO.
+async function fetchTickets(incluirResolvidos: boolean): Promise<Ticket[]> {
+  let query = supabase
     .from("maintenance_tickets")
     .select("id, categoria, descricao, observacao, status, data_abertura, contracts(imovel_endereco)")
     .order("data_abertura", { ascending: false });
+
+  if (incluirResolvidos) {
+    query = query.limit(LIMITE_HISTORICO);
+  } else {
+    query = query.in("status", ["aberto", "em_andamento"]);
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
 
   return (data ?? []).map((row: any) => ({
@@ -69,10 +110,16 @@ const colorMap: Record<MaintenanceCategoria, string> = {
 export function ManutencaoSection() {
   const queryClient = useQueryClient();
   const [observacoes, setObservacoes] = useState<Record<string, string>>({});
+  const [mostrarHistorico, setMostrarHistorico] = useState(false);
+
+  const { data: stats } = useQuery({
+    queryKey: MANUTENCAO_STATS_QUERY_KEY,
+    queryFn: fetchTicketStats,
+  });
 
   const { data: tickets = [], isLoading, isError } = useQuery({
-    queryKey: MANUTENCAO_QUERY_KEY,
-    queryFn: fetchTickets,
+    queryKey: [...MANUTENCAO_QUERY_KEY, mostrarHistorico],
+    queryFn: () => fetchTickets(mostrarHistorico),
   });
 
   const salvarObservacaoMutation = useMutation({
@@ -87,6 +134,7 @@ export function ManutencaoSection() {
     onSuccess: () => {
       toast.success("Observação salva");
       queryClient.invalidateQueries({ queryKey: MANUTENCAO_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: MANUTENCAO_STATS_QUERY_KEY });
     },
     onError: (error: Error) => {
       console.error("Erro ao salvar observação:", error);
@@ -112,6 +160,7 @@ export function ManutencaoSection() {
         icon: <CheckCircle2 className="h-4 w-4" />,
       });
       queryClient.invalidateQueries({ queryKey: MANUTENCAO_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: MANUTENCAO_STATS_QUERY_KEY });
     },
     onError: (error: Error) => {
       console.error("Erro ao resolver ticket:", error);
@@ -131,23 +180,46 @@ export function ManutencaoSection() {
           tone="a"
           icon={<ClipboardList className="h-5 w-5" />}
           label="Total de Tickets"
-          value={tickets.length}
+          value={stats?.total ?? 0}
           sublabel="no total"
         />
         <StatTile
           tone="c"
           icon={<AlertCircle className="h-5 w-5" />}
           label="Abertos"
-          value={tickets.filter((t) => t.status !== "resolvido").length}
+          value={stats?.abertos ?? 0}
           sublabel="aguardando resolução"
         />
         <StatTile
           tone="d"
           icon={<CheckCircle2 className="h-5 w-5" />}
           label="Resolvidos"
-          value={tickets.filter((t) => t.status === "resolvido").length}
+          value={stats?.resolvidos ?? 0}
           sublabel="concluídos"
         />
+      </div>
+
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-muted-foreground">
+          {mostrarHistorico
+            ? `Mostrando histórico completo (últimos ${LIMITE_HISTORICO} tickets).`
+            : "Mostrando apenas tickets em aberto."}
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setMostrarHistorico((prev) => !prev)}
+        >
+          {mostrarHistorico ? (
+            <>
+              <ListFilter className="h-4 w-4 mr-2" /> Ver só em aberto
+            </>
+          ) : (
+            <>
+              <History className="h-4 w-4 mr-2" /> Ver histórico completo
+            </>
+          )}
+        </Button>
       </div>
 
       {isError && (
@@ -156,6 +228,13 @@ export function ManutencaoSection() {
         </p>
       )}
       {isLoading && <p className="text-sm text-muted-foreground">Carregando...</p>}
+      {!isLoading && !isError && tickets.length === 0 && (
+        <p className="text-sm text-muted-foreground mb-4">
+          {mostrarHistorico
+            ? "Nenhum ticket registrado ainda."
+            : "Nenhum ticket em aberto no momento. 🎉"}
+        </p>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         {tickets.map((t) => {

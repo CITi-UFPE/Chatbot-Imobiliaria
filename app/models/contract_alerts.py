@@ -22,3 +22,4 @@ class ContratoParaAlerta(BaseModel):
     data_termino: date
     indice_reajuste: Optional[IndiceReajuste] = None
     valor_aluguel: float = Field(gt=0)
+    prazo_indeterminado: bool = False
