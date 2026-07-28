@@ -8,7 +8,8 @@ import { ContratosSection } from "@/components/gestao/ContratosSection";
 import { CobrancasSection } from "@/components/gestao/CobrancasSection";
 import { AguaSection } from "@/components/gestao/AguaSection";
 import { ManutencaoSection } from "@/components/gestao/ManutencaoSection";
-import { RenovacoesSection } from "@/components/gestao/RenovacoesSection";
+import { ReajustesSection } from "@/components/gestao/ReajustesSection";
+import { RenovacaoSection } from "@/components/gestao/RenovacaoSection";
 import { LoginScreen } from "@/components/gestao/LoginScreen";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
@@ -20,13 +21,13 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Gerencie contratos, cobranças, consumo de água, manutenção e renovações em um único painel moderno e integrado.",
+          "Gerencie contratos, cobranças, consumo de água, manutenção, reajustes e renovações em um único painel moderno e integrado.",
       },
       { property: "og:title", content: "GestãoImob — Gestão Imobiliária" },
       {
         property: "og:description",
         content:
-          "Painel completo para administradoras: contratos, negociações, água, manutenção e renovações.",
+          "Painel completo para administradoras: contratos, negociações, água, manutenção, reajustes e renovações.",
       },
     ],
   }),
@@ -38,7 +39,8 @@ export type SectionKey =
   | "cobrancas"
   | "agua"
   | "manutencao"
-  | "renovacoes";
+  | "reajustes"
+  | "renovacao";
 
 function Index() {
   const [section, setSection] = useState<SectionKey>("contratos");
@@ -97,7 +99,8 @@ function Index() {
           {section === "cobrancas" && <CobrancasSection />}
           {section === "agua" && <AguaSection />}
           {section === "manutencao" && <ManutencaoSection />}
-          {section === "renovacoes" && <RenovacoesSection />}
+          {section === "reajustes" && <ReajustesSection />}
+          {section === "renovacao" && <RenovacaoSection />}
         </div>
       </main>
       <Toaster richColors position="top-right" />

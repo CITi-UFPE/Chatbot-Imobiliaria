@@ -1,4 +1,4 @@
-import { FileText, HandCoins, Droplets, Wrench, RefreshCw, Building2, Menu, X } from "lucide-react";
+import { FileText, HandCoins, Droplets, Wrench, TrendingUp, CalendarClock, Building2, Menu, X } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type { SectionKey } from "@/routes/index";
@@ -8,7 +8,8 @@ const items: { key: SectionKey; label: string; icon: React.ComponentType<{ class
   { key: "cobrancas", label: "Cobranças em Negociação", icon: HandCoins },
   { key: "agua", label: "Consumo de Água", icon: Droplets },
   { key: "manutencao", label: "Manutenção", icon: Wrench },
-  { key: "renovacoes", label: "Renovações e Reajustes", icon: RefreshCw },
+  { key: "reajustes", label: "Reajustes", icon: TrendingUp },
+  { key: "renovacao", label: "Renovação", icon: CalendarClock },
 ];
 
 export function AppSidebar({
