@@ -36,6 +36,11 @@ async function fetchLeituras(): Promise<Leitura[]> {
     .from("contracts")
     .select("id, imovel_endereco, inquilino_nome, dia_vencimento")
     .eq("status", "ativo")
+    // Contratos com água embutida no condomínio não geram cobrança
+    // separada — não faz sentido a gestora lançar leitura pra eles
+    // (o banco bloquearia o upsert de charges abaixo de qualquer forma,
+    // ver trigger charges_valida_agua_individualizada na Migration 012).
+    .eq("agua_individualizada", true)
     .order("imovel_endereco");
   if (contratosError) throw contratosError;
 

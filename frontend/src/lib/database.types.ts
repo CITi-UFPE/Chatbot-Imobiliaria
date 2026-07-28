@@ -33,6 +33,7 @@ export interface ContractRow {
   data_termino: string; // date (YYYY-MM-DD)
   indice_reajuste: "igpm" | "livre_negociacao" | null;
   data_aniversario_reajuste: string | null; // date
+  agua_individualizada: boolean;
   status: ContractStatus;
   observacoes: string | null;
   created_at: string;

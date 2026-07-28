@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -339,6 +340,12 @@ function UploadWizard({
   const [dados, setDados] = useState<ContratoExtraido | null>(null);
   const [clausulas, setClausulas] = useState<ClausulaExtraida[]>([]);
   const [whatsapp, setWhatsapp] = useState("");
+  // Não vem da extração por IA — decisão de negócio: água tem efeito
+  // financeiro direto (gera ou não cobrança separada todo mês) e o
+  // contrato nem sempre deixa isso explícito o bastante pra IA acertar
+  // com segurança. Sempre nasce false (água embutida no condomínio) até
+  // a gestora marcar manualmente que o imóvel tem hidrômetro individual.
+  const [aguaIndividualizada, setAguaIndividualizada] = useState(false);
 
   const duplicado =
     !!dados &&
@@ -347,6 +354,9 @@ function UploadWizard({
   const handleFile = (f: File | null) => {
     if (!f) return;
     setFile(f);
+    // Novo arquivo = potencialmente outro imóvel/contrato — nunca herdar o
+    // valor de água individualizada marcado para o contrato anterior.
+    setAguaIndividualizada(false);
   };
 
   // ==========================================================
@@ -410,6 +420,7 @@ function UploadWizard({
           ...dados,
           telefone_whatsapp: whatsapp,
           status: "pendente_confirmacao",
+          agua_individualizada: aguaIndividualizada,
         })
         .select()
         .single();
@@ -446,6 +457,7 @@ function UploadWizard({
       setDados(null);
       setClausulas([]);
       setWhatsapp("");
+      setAguaIndividualizada(false);
     },
     onError: (error: Error) => {
       console.error("Erro ao salvar contrato:", error);
@@ -607,6 +619,18 @@ function UploadWizard({
                   onChange={(e) => setWhatsapp(e.target.value)}
                 />
               </Field>
+            </div>
+
+            <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
+              <div>
+                <div className="font-medium text-sm">Água individualizada (hidrômetro próprio)</div>
+                <div className="text-sm text-muted-foreground">
+                  Desligado: água já embutida no condomínio, nenhuma cobrança separada é gerada.
+                  Ligado: a gestora poderá lançar a leitura mensal em "Consumo de Água" e uma
+                  cobrança de água será gerada à parte.
+                </div>
+              </div>
+              <Switch checked={aguaIndividualizada} onCheckedChange={setAguaIndividualizada} />
             </div>
 
             {/* Campos abaixo são obrigatórios no banco (NOT NULL) mas raramente
