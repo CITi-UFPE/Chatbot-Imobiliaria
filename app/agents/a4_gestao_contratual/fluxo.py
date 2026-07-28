@@ -67,6 +67,13 @@ def processar_alerta_renovacao(
     *,
     registrar_alerta_renovacao_fn: Callable[[UUID, date], bool],
 ) -> Optional[str]:
+    # Contratos de prazo indeterminado (ex: renovação por inércia, cláusula
+    # 3.3) não têm mais uma data de término real — data_termino aqui é só
+    # um valor histórico. Pular o Fluxo A pra eles é deliberado, não uma
+    # omissão: ver docs/schemas/012_prazo_indeterminado.sql.
+    if contrato.prazo_indeterminado:
+        return None
+
     if not esta_na_janela_alerta_renovacao(contrato.data_termino, hoje):
         return None
 
