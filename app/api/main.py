@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routers import contracts, whatsapp
+from app.api.routers import charges, contracts, whatsapp
 
 app = FastAPI(title="Projeto Domingos Monteiro — API")
 
@@ -20,6 +20,7 @@ app.add_middleware(
 )
 
 app.include_router(contracts.router)
+app.include_router(charges.router)
 # Webhook do WhatsApp: chamado pela Meta (server-to-server), não por
 # navegador — não passa pelo CORSMiddleware acima, que só afeta chamadas
 # feitas por browser.

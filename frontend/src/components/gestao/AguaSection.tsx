@@ -1,254 +1,611 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Info, Zap, Save, Loader2 } from "lucide-react";
+import {
+  Info,
+  Loader2,
+  ScanSearch,
+  CloudUpload,
+  Upload,
+  FileText,
+  AlertCircle,
+  CheckCircle2,
+  Search,
+} from "lucide-react";
 import { PageHeader } from "./PageHeader";
-import { Avatar } from "./Avatar";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 
 const AGUA_QUERY_KEY = ["contratos-agua"] as const;
 
-interface Leitura {
-  contractId: string;
-  imovel: string;
-  inquilino: string;
-  diaVencimento: number;
-  consumoAtual: number | null; // valor já salvo no banco pro mês corrente, se existir
-}
-
-function primeiroDiaMesAtual(): string {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-}
-
-function dataVencimentoMesAtual(diaVencimento: number): string {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), diaVencimento).toISOString().slice(0, 10);
-}
-
-async function fetchLeituras(): Promise<Leitura[]> {
-  const { data: contratos, error: contratosError } = await supabase
-    .from("contracts")
-    .select("id, imovel_endereco, inquilino_nome, dia_vencimento")
-    .eq("status", "ativo")
-    .order("imovel_endereco");
-  if (contratosError) throw contratosError;
-
-  const mesAtual = primeiroDiaMesAtual();
-  const { data: charges, error: chargesError } = await supabase
-    .from("charges")
-    .select("contract_id, consumo_m3")
-    .eq("tipo", "agua")
-    .eq("mes_referencia", mesAtual);
-  if (chargesError) throw chargesError;
-
-  const consumoPorContrato = new Map((charges ?? []).map((c) => [c.contract_id, c.consumo_m3]));
-
-  return (contratos ?? []).map((c) => ({
-    contractId: c.id,
-    imovel: c.imovel_endereco,
-    inquilino: c.inquilino_nome,
-    diaVencimento: c.dia_vencimento,
-    consumoAtual: consumoPorContrato.get(c.id) ?? null,
-  }));
-}
-
-// Fórmula acordada: (consumo × R$ 6,18) + R$ 5,00 de taxa fixa.
-function calcularValor(consumo: number): number {
-  return consumo * 6.18 + 5;
-}
-
 export function AguaSection() {
-  const queryClient = useQueryClient();
-  const [inputs, setInputs] = useState<Record<string, string>>({});
-  const [auto, setAuto] = useState(false);
-
-  const { data: items = [], isLoading, isError } = useQuery({
-    queryKey: AGUA_QUERY_KEY,
-    queryFn: fetchLeituras,
-  });
-
-  // "AUTO" (integração com fonte digital de leitura) ainda não existe de
-  // verdade — nenhum fornecedor foi integrado ainda. Mantido como
-  // simulação visual explícita até essa integração existir de fato.
-  const AUTO_LEITURAS_MOCK: Record<string, string> = {};
-
-  const displayValue = (l: Leitura) => {
-    if (auto) return AUTO_LEITURAS_MOCK[l.contractId] ?? "";
-    return inputs[l.contractId] ?? (l.consumoAtual != null ? String(l.consumoAtual) : "");
-  };
-
-  const salvarMutation = useMutation({
-    mutationFn: async (l: Leitura) => {
-      const raw = inputs[l.contractId];
-      const consumo = parseFloat(raw ?? "");
-      if (!Number.isFinite(consumo) || consumo <= 0) {
-        throw new Error("Informe um consumo válido antes de salvar");
-      }
-      const valor = calcularValor(consumo);
-
-      const { error } = await supabase.from("charges").upsert(
-        {
-          contract_id: l.contractId,
-          tipo: "agua",
-          mes_referencia: primeiroDiaMesAtual(),
-          data_vencimento: dataVencimentoMesAtual(l.diaVencimento),
-          consumo_m3: consumo,
-          valor_esperado: valor,
-        },
-        { onConflict: "contract_id,tipo,mes_referencia" },
-      );
-      if (error) throw error;
-    },
-    onSuccess: (_data, l) => {
-      toast.success(`Leitura de ${l.imovel} salva`);
-      queryClient.invalidateQueries({ queryKey: AGUA_QUERY_KEY });
-    },
-    onError: (error: Error) => {
-      console.error("Erro ao salvar leitura de água:", error);
-      toast.error(error.message || "Não foi possível salvar a leitura. Tente novamente.");
-    },
-  });
-
   return (
     <div>
       <PageHeader
         title="Consumo de Água"
-        description="Registre as leituras mensais em m³. O valor é calculado em tempo real."
+        description="Envie a conta de água em PDF e deixe o sistema fazer o resto."
       />
-
-      <Card className="mb-6">
-        <CardContent className="flex items-center justify-between gap-4 py-4">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-lg bg-[var(--brand-soft)] flex items-center justify-center">
-              <Zap className="h-5 w-5 text-[var(--brand-strong)]" />
-            </div>
-            <div>
-              <div className="font-medium">Usar integração automática (Fonte Digital)</div>
-              <div className="text-sm text-muted-foreground">
-                Ainda não há fornecedor integrado — ligar aqui só simula o modo somente-leitura.
-              </div>
-            </div>
-          </div>
-          <Switch checked={auto} onCheckedChange={setAuto} />
-        </CardContent>
-      </Card>
 
       <div className="rounded-lg border bg-[var(--info-bg)] border-[var(--info-border)] p-3 mb-6 flex items-start gap-2 text-sm text-[var(--info-strong)]">
         <Info className="h-4 w-4 mt-0.5 shrink-0" />
         <span>
-          Fórmula aplicada: <strong>(Consumo × R$ 6,18) + R$ 5,00</strong>. A cobrança de água será
-          disparada separadamente do aluguel.
+          Como funciona: envie o PDF da conta de água recebida do condomínio. O sistema lê o
+          documento sozinho e já sugere para qual imóvel ela pertence. Você confere os dados
+          ao lado do PDF e só confirma quando estiver tudo certo — nada é lançado sem a sua
+          aprovação.
         </span>
       </div>
 
-      {isError && (
-        <p className="text-sm text-destructive mb-4">
-          Não foi possível carregar os imóveis. Verifique sua sessão e tente novamente.
-        </p>
-      )}
+      <ComprovanteAguaUpload />
+    </div>
+  );
+}
 
-      <Card>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-muted-foreground">
-                <tr>
-                  <th className="text-left px-6 py-3 font-medium">Imóvel</th>
-                  <th className="text-left px-6 py-3 font-medium">Inquilino</th>
-                  <th className="text-left px-6 py-3 font-medium w-48">Consumo (m³)</th>
-                  <th className="text-right px-6 py-3 font-medium">Valor Cobrança</th>
-                  <th className="text-right px-6 py-3 font-medium w-20"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading && (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-8 text-center text-muted-foreground">
-                      Carregando...
-                    </td>
-                  </tr>
+
+/* ============================================================
+   Fluxo Híbrido — Leitura de Água por Comprovante (IA + Humano)
+   ============================================================
+   Upload de 1 PDF por vez -> IA extrai os campos e sugere o
+   contrato correspondente -> tela de conferência com o PDF
+   sempre visível ao lado dos dados -> confirmação humana grava
+   em `charges` (tipo = 'agua').
+*/
+
+const CONTRATOS_ATIVOS_QUERY_KEY = ["contratos-ativos-para-match"] as const;
+
+interface ContratoAtivo {
+  id: string;
+  imovel_identificacao: string;
+  imovel_endereco: string;
+  dia_vencimento: number;
+}
+
+async function fetchContratosAtivosParaMatch(): Promise<ContratoAtivo[]> {
+  const { data, error } = await supabase
+    .from("contracts")
+    .select("id, imovel_identificacao, imovel_endereco, dia_vencimento")
+    .eq("status", "ativo")
+    .order("imovel_endereco");
+  if (error) throw error;
+  return data ?? [];
+}
+
+interface CandidatoContrato {
+  contractId: string;
+  confianca: number; // 0 a 1
+  justificativa: string;
+}
+
+interface ExtracaoContaAguaResult {
+  condominio: string;
+  apartamento: string;
+  bloco: string | null;
+  periodoInicio: string; // YYYY-MM-DD
+  periodoFim: string; // YYYY-MM-DD
+  valorTotal: number;
+  candidatos: CandidatoContrato[];
+}
+
+type CandidatoValido = CandidatoContrato & ContratoAtivo;
+
+// ==========================================================
+// 🔌 PONTO DE INTEGRAÇÃO: extração + correspondência via IA
+// ==========================================================
+// Envia o PDF da conta de água + a lista de contratos ativos
+// (id, imovel_identificacao, imovel_endereco) pro backend, que
+// chama a Claude API para ler o documento e raciocinar sobre a
+// correspondência num único passo, conforme o fluxo híbrido.
+async function extrairEIdentificarContrato(
+  arquivo: File,
+  contratosAtivos: ContratoAtivo[],
+): Promise<ExtracaoContaAguaResult> {
+  const formData = new FormData();
+  formData.append("arquivo", arquivo);
+  formData.append(
+    "contratos",
+    JSON.stringify(
+      contratosAtivos.map((c) => ({
+        id: c.id,
+        imovel_identificacao: c.imovel_identificacao,
+        imovel_endereco: c.imovel_endereco,
+      })),
+    ),
+  );
+
+  const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+  const response = await fetch(`${apiUrl}/charges/agua/extrair`, {
+    method: "POST",
+    body: formData,
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeout));
+
+  if (!response.ok) {
+    const erro = await response.json().catch(() => null);
+    throw new Error(erro?.detail ?? "Falha ao processar a conta de água.");
+  }
+
+  return response.json();
+}
+
+// Limiares para classificar o cenário de correspondência — ver a
+// "Regra de decisão" do fluxo híbrido. Ajustável conforme a
+// qualidade real das pontuações devolvidas pela IA.
+const CONFIANCA_MINIMA = 0.7;
+const DIFERENCA_MINIMA_DESEMPATE = 0.2;
+
+type CenarioMatch = "confiavel" | "ambiguidade" | "lista_completa";
+
+function classificarCenario(candidatos: CandidatoValido[]): CenarioMatch {
+  if (candidatos.length === 0 || candidatos.length >= 3) return "lista_completa";
+  if (candidatos.length === 1) {
+    return candidatos[0].confianca >= CONFIANCA_MINIMA ? "confiavel" : "lista_completa";
+  }
+  const [primeiro, segundo] = [...candidatos].sort((a, b) => b.confianca - a.confianca);
+  if (
+    primeiro.confianca >= CONFIANCA_MINIMA &&
+    primeiro.confianca - segundo.confianca >= DIFERENCA_MINIMA_DESEMPATE
+  ) {
+    return "confiavel";
+  }
+  return "ambiguidade";
+}
+
+function primeiroDiaDoMes(dataISO: string): string {
+  const [ano, mes] = dataISO.split("-");
+  return `${ano}-${mes}-01`;
+}
+
+function dataVencimentoDoMes(diaVencimento: number, mesReferenciaISO: string): string {
+  const [ano, mes] = mesReferenciaISO.split("-");
+  return `${ano}-${mes}-${String(diaVencimento).padStart(2, "0")}`;
+}
+
+interface CamposExtraidos {
+  condominio: string;
+  apartamento: string;
+  bloco: string;
+  periodoInicio: string;
+  periodoFim: string;
+  valorTotal: number;
+}
+
+export function ComprovanteAguaUpload() {
+  const queryClient = useQueryClient();
+  const [step, setStep] = useState<1 | 2>(1);
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const [campos, setCampos] = useState<CamposExtraidos>({
+    condominio: "",
+    apartamento: "",
+    bloco: "",
+    periodoInicio: "",
+    periodoFim: "",
+    valorTotal: 0,
+  });
+  const [candidatos, setCandidatos] = useState<CandidatoValido[]>([]);
+  const [cenario, setCenario] = useState<CenarioMatch>("lista_completa");
+  const [buscaManual, setBuscaManual] = useState("");
+  const [modoBuscaManual, setModoBuscaManual] = useState(false);
+  const [contratoSelecionadoId, setContratoSelecionadoId] = useState<string | null>(null);
+
+  const { data: contratosAtivos = [] } = useQuery({
+    queryKey: CONTRATOS_ATIVOS_QUERY_KEY,
+    queryFn: fetchContratosAtivosParaMatch,
+  });
+
+  const contratoSelecionado = contratosAtivos.find((c) => c.id === contratoSelecionadoId) ?? null;
+
+  const resetar = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setStep(1);
+    setFile(null);
+    setPreviewUrl(null);
+    setCampos({
+      condominio: "",
+      apartamento: "",
+      bloco: "",
+      periodoInicio: "",
+      periodoFim: "",
+      valorTotal: 0,
+    });
+    setCandidatos([]);
+    setCenario("lista_completa");
+    setBuscaManual("");
+    setModoBuscaManual(false);
+    setContratoSelecionadoId(null);
+  };
+
+  const handleFile = (f: File | null) => {
+    if (!f) return;
+    if (f.type !== "application/pdf") {
+      toast.error("Envie o arquivo em PDF");
+      return;
+    }
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setFile(f);
+    setPreviewUrl(URL.createObjectURL(f));
+  };
+
+  const processarArquivo = async () => {
+    if (!file) {
+      toast.error("Selecione o PDF da conta de água");
+      return;
+    }
+    if (contratosAtivos.length === 0) {
+      toast.error("Nenhum contrato ativo cadastrado para associar a leitura");
+      return;
+    }
+    setLoading(true);
+    try {
+      const resultado = await extrairEIdentificarContrato(file, contratosAtivos);
+
+      // Descarta candidatos cujo id não existe mais em contracts —
+      // tratado como ausência de correspondência confiável.
+      const candidatosValidos: CandidatoValido[] = resultado.candidatos
+        .map((c) => {
+          const contrato = contratosAtivos.find((ct) => ct.id === c.contractId);
+          return contrato ? { ...c, ...contrato } : null;
+        })
+        .filter((c): c is CandidatoValido => c !== null);
+
+      const cenarioDetectado = classificarCenario(candidatosValidos);
+      const ordenados = [...candidatosValidos].sort((a, b) => b.confianca - a.confianca);
+
+      setCampos({
+        condominio: resultado.condominio,
+        apartamento: resultado.apartamento,
+        bloco: resultado.bloco ?? "",
+        periodoInicio: resultado.periodoInicio,
+        periodoFim: resultado.periodoFim,
+        valorTotal: resultado.valorTotal,
+      });
+      setCandidatos(candidatosValidos);
+      setCenario(cenarioDetectado);
+      setModoBuscaManual(cenarioDetectado === "lista_completa");
+      setContratoSelecionadoId(cenarioDetectado === "confiavel" ? ordenados[0]?.contractId ?? null : null);
+      setBuscaManual("");
+      setStep(2);
+    } catch (error) {
+      console.error("Erro ao processar conta de água:", error);
+      toast.error(
+        error instanceof Error ? error.message : "Não foi possível processar o documento. Tente novamente.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmarMutation = useMutation({
+    mutationFn: async () => {
+      if (!contratoSelecionado) throw new Error("Selecione o contrato correspondente");
+      if (!campos.valorTotal || campos.valorTotal <= 0) throw new Error("Informe um valor válido");
+      if (!campos.periodoInicio) throw new Error("Informe o período de referência");
+
+      const mesReferencia = primeiroDiaDoMes(campos.periodoInicio);
+      const dataVencimento = dataVencimentoDoMes(contratoSelecionado.dia_vencimento, mesReferencia);
+
+      // Grava apenas a cobrança esperada do mês, com base na leitura da
+      // conta de água. valor_identificado, comprovante_url e
+      // data_identificada_comprovante ficam nulos de propósito: só são
+      // preenchidos depois, quando o inquilino enviar o comprovante de
+      // pagamento (fluxo separado). data_pagamento e mensagem_estagio
+      // também ficam nulos, e status assume o default 'pendente' da tabela.
+      const { error: insertError } = await supabase.from("charges").insert({
+        contract_id: contratoSelecionado.id,
+        tipo: "agua",
+        mes_referencia: mesReferencia,
+        valor_esperado: campos.valorTotal,
+        data_vencimento: dataVencimento,
+      });
+
+      if (insertError) {
+        if (insertError.code === "23505") {
+          throw new Error("Já existe uma cobrança de água lançada para este imóvel neste período.");
+        }
+        throw insertError;
+      }
+    },
+    onSuccess: () => {
+      toast.success(`Leitura de água de ${contratoSelecionado?.imovel_endereco} lançada com sucesso`);
+      queryClient.invalidateQueries({ queryKey: AGUA_QUERY_KEY });
+      resetar();
+    },
+    onError: (error: Error) => {
+      console.error("Erro ao confirmar leitura de água:", error);
+      toast.error(error.message || "Não foi possível salvar a leitura. Tente novamente.");
+    },
+  });
+
+  const contratosFiltrados = contratosAtivos.filter((c) => {
+    const termo = buscaManual.trim().toLowerCase();
+    if (!termo) return true;
+    return (
+      c.imovel_identificacao.toLowerCase().includes(termo) ||
+      c.imovel_endereco.toLowerCase().includes(termo)
+    );
+  });
+
+  const candidatosOrdenados = [...candidatos].sort((a, b) => b.confianca - a.confianca);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg flex items-center gap-2">
+          <ScanSearch className="h-5 w-5 text-primary" />
+          Lançar Conta de Água por Comprovante
+        </CardTitle>
+        <CardDescription>
+          Envie o PDF da conta, a IA lê o documento e sugere o contrato correspondente — a
+          confirmação final é sempre sua, com o comprovante ao lado.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {step === 1 && (
+          <div className="space-y-4">
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                handleFile(e.dataTransfer.files?.[0] ?? null);
+              }}
+              className={cn(
+                "border-2 border-dashed rounded-xl p-10 text-center transition-colors",
+                dragOver ? "border-primary bg-primary/5" : "border-border bg-muted/20",
+              )}
+            >
+              <CloudUpload className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+              <p className="font-medium">Arraste a conta de água aqui</p>
+              <p className="text-sm text-muted-foreground mb-4">Apenas 1 arquivo PDF por vez</p>
+              <label>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  className="hidden"
+                  onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
+                />
+                <span className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium cursor-pointer hover:opacity-90">
+                  <Upload className="h-4 w-4" /> Selecionar PDF
+                </span>
+              </label>
+              {file && (
+                <div className="mt-4 inline-flex items-center gap-2 text-sm bg-background border rounded-md px-3 py-1.5">
+                  <FileText className="h-4 w-4" /> {file.name}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end">
+              <Button onClick={processarArquivo} disabled={loading}>
+                {loading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Lendo documento com IA...
+                  </>
+                ) : (
+                  "Processar conta"
                 )}
-                {items.map((l) => {
-                  const v = displayValue(l);
-                  const n = parseFloat(v);
-                  const total = Number.isFinite(n) && n > 0 ? calcularValor(n) : null;
-                  const dirty = inputs[l.contractId] !== undefined && inputs[l.contractId] !== "";
-                  const isPending =
-                    salvarMutation.isPending &&
-                    salvarMutation.variables?.contractId === l.contractId;
-                  return (
-                    <tr key={l.contractId} className="border-t hover:bg-muted/20">
-                      <td className="px-6 py-4 font-medium">{l.imovel}</td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-2.5">
-                          <Avatar name={l.inquilino} size={28} />
-                          <span className="text-muted-foreground">{l.inquilino}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
-                          <Input
-                            type="number"
-                            min="0"
-                            step="0.1"
-                            placeholder="0"
-                            value={v}
-                            disabled={auto}
-                            onChange={(e) =>
-                              setInputs((prev) => ({ ...prev, [l.contractId]: e.target.value }))
-                            }
-                            className="max-w-[110px]"
-                          />
-                          {auto && (
-                            <Badge variant="secondary" className="text-[10px]">
-                              AUTO
-                            </Badge>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        {total !== null ? (
-                          <span className="font-semibold text-primary tnum">
-                            R$ {total.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground text-xs">—</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        {!auto && dirty && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => salvarMutation.mutate(l)}
-                            disabled={isPending}
-                          >
-                            {isPending ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Save className="h-4 w-4" />
-                            )}
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+              </Button>
+            </div>
           </div>
-        </CardContent>
-      </Card>
+        )}
 
-      <p className="text-xs text-muted-foreground mt-3 italic">
-        A cobrança de água será disparada separadamente do aluguel.
-      </p>
+        {step === 2 && (
+          <div className="grid lg:grid-cols-2 gap-6 items-start">
+            {/* Lado esquerdo — documento original, sempre visível durante a conferência */}
+            <div className="lg:sticky lg:top-4 h-[70vh] rounded-lg border overflow-hidden bg-muted/20">
+              {previewUrl && <iframe src={previewUrl} title="Conta de água" className="w-full h-full" />}
+            </div>
+
+            {/* Lado direito — dados extraídos (editáveis) + escolha do contrato */}
+            <div className="space-y-5">
+              <div className="rounded-lg bg-[var(--info-bg)] border border-[var(--info-border)] p-3 flex gap-2 text-sm text-[var(--info-strong)]">
+                <Info className="h-4 w-4 mt-0.5 shrink-0" />
+                <span>Confira cada campo ao lado do PDF antes de confirmar o lançamento.</span>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <FieldAgua label="Condomínio / Edifício">
+                  <Input
+                    value={campos.condominio}
+                    onChange={(e) => setCampos((p) => ({ ...p, condominio: e.target.value }))}
+                  />
+                </FieldAgua>
+                <FieldAgua label="Apartamento">
+                  <Input
+                    value={campos.apartamento}
+                    onChange={(e) => setCampos((p) => ({ ...p, apartamento: e.target.value }))}
+                  />
+                </FieldAgua>
+                <FieldAgua label="Bloco">
+                  <Input
+                    value={campos.bloco}
+                    onChange={(e) => setCampos((p) => ({ ...p, bloco: e.target.value }))}
+                  />
+                </FieldAgua>
+                <FieldAgua label="Valor total (R$)">
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={campos.valorTotal}
+                    onChange={(e) => setCampos((p) => ({ ...p, valorTotal: Number(e.target.value) }))}
+                  />
+                </FieldAgua>
+                <FieldAgua label="Período — início">
+                  <Input
+                    type="date"
+                    value={campos.periodoInicio}
+                    onChange={(e) => setCampos((p) => ({ ...p, periodoInicio: e.target.value }))}
+                  />
+                </FieldAgua>
+                <FieldAgua label="Período — fim">
+                  <Input
+                    type="date"
+                    value={campos.periodoFim}
+                    onChange={(e) => setCampos((p) => ({ ...p, periodoFim: e.target.value }))}
+                  />
+                </FieldAgua>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Contrato correspondente</Label>
+                  {!modoBuscaManual && (
+                    <button
+                      type="button"
+                      onClick={() => setModoBuscaManual(true)}
+                      className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+                    >
+                      Escolher manualmente
+                    </button>
+                  )}
+                </div>
+
+                {!modoBuscaManual && cenario === "confiavel" && candidatosOrdenados[0] && (
+                  <CandidatoCard
+                    candidato={candidatosOrdenados[0]}
+                    selecionado={contratoSelecionadoId === candidatosOrdenados[0].contractId}
+                    onSelecionar={() => setContratoSelecionadoId(candidatosOrdenados[0].contractId)}
+                  />
+                )}
+
+                {!modoBuscaManual && cenario === "ambiguidade" && (
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    {candidatosOrdenados.map((c) => (
+                      <CandidatoCard
+                        key={c.contractId}
+                        candidato={c}
+                        selecionado={contratoSelecionadoId === c.contractId}
+                        onSelecionar={() => setContratoSelecionadoId(c.contractId)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {(modoBuscaManual || cenario === "lista_completa") && (
+                  <div className="space-y-2">
+                    {cenario === "lista_completa" && (
+                      <div className="rounded-lg bg-[var(--warning-bg)] border border-[var(--warning-border)] p-3 flex gap-2 text-sm text-[var(--warning-fg)]">
+                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                        <span>
+                          Não encontramos uma correspondência confiável. Localize o contrato manualmente.
+                        </span>
+                      </div>
+                    )}
+                    <div className="relative">
+                      <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        placeholder="Buscar por identificação ou endereço do imóvel"
+                        value={buscaManual}
+                        onChange={(e) => setBuscaManual(e.target.value)}
+                        className="pl-9"
+                      />
+                    </div>
+                    <div className="max-h-56 overflow-y-auto rounded-lg border divide-y">
+                      {contratosFiltrados.length === 0 && (
+                        <div className="p-3 text-sm text-muted-foreground">Nenhum contrato encontrado</div>
+                      )}
+                      {contratosFiltrados.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => setContratoSelecionadoId(c.id)}
+                          className={cn(
+                            "w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors",
+                            contratoSelecionadoId === c.id && "bg-primary/5",
+                          )}
+                        >
+                          <div className="font-medium flex items-center gap-2">
+                            {c.imovel_identificacao}
+                            {contratoSelecionadoId === c.id && (
+                              <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                            )}
+                          </div>
+                          <div className="text-xs text-muted-foreground">{c.imovel_endereco}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between pt-2">
+                <Button variant="outline" onClick={resetar} disabled={confirmarMutation.isPending}>
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={() => confirmarMutation.mutate()}
+                  disabled={!contratoSelecionadoId || confirmarMutation.isPending}
+                >
+                  {confirmarMutation.isPending ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Salvando...
+                    </>
+                  ) : (
+                    "Confirmar Lançamento"
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CandidatoCard({
+  candidato,
+  selecionado,
+  onSelecionar,
+}: {
+  candidato: CandidatoValido;
+  selecionado: boolean;
+  onSelecionar: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelecionar}
+      className={cn(
+        "text-left rounded-lg border-2 p-4 transition-colors w-full",
+        selecionado ? "border-primary bg-primary/5" : "border-border hover:border-primary/40",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="font-medium">{candidato.imovel_identificacao}</span>
+        <Badge variant={candidato.confianca >= CONFIANCA_MINIMA ? "default" : "secondary"}>
+          {Math.round(candidato.confianca * 100)}% de confiança
+        </Badge>
+      </div>
+      <div className="text-xs text-muted-foreground mb-2">{candidato.imovel_endereco}</div>
+      <div className="text-xs text-muted-foreground italic">{candidato.justificativa}</div>
+      {selecionado && (
+        <div className="mt-2 flex items-center gap-1 text-xs text-primary font-medium">
+          <CheckCircle2 className="h-3.5 w-3.5" /> Selecionado
+        </div>
+      )}
+    </button>
+  );
+}
+
+function FieldAgua({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-sm">{label}</Label>
+      {children}
     </div>
   );
 }
