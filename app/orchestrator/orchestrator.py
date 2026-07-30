@@ -4,12 +4,17 @@ Duas etapas:
   1. classificar_intencao (app/orchestrator/classificador.py) decide qual
      agente deve tratar a mensagem — classificação rasa e rápida, um
      system prompt curto devolvendo {agente, motivo, urgencia}.
-  2. Roteamento de fato: A1 (app/agents/a1_atendimento), A3
-     (app/agents/a3_manutencao) e A5 (app/agents/a5_escalonamento) já têm
-     lógica de agente implementada de verdade. A4 ainda é placeholder pra
-     mensagem de conversa (é só cron, não reage a texto — ver
-     app/agents/a4_gestao_contratual/fluxo.py). Quando ganhar essa
-     integração, o bloco correspondente abaixo passa a chamá-la.
+  2. Roteamento de fato: só A1 (app/agents/a1_atendimento), A3
+     (app/agents/a3_manutencao) e A5 (app/agents/a5_escalonamento) recebem
+     texto — classificador.py::AgenteDestino é literalmente restrito a
+     esses três valores, então o schema da tool nem permite ao Claude
+     devolver A2 ou A4 aqui. Não é um "ainda não" temporário: A4 é só cron
+     (não reage a texto — ver app/agents/a4_gestao_contratual/fluxo.py) e
+     A2 é só evento (ver abaixo) — nenhum dos dois vai ganhar uma
+     integração de texto no futuro, então não existe bloco placeholder
+     esperando ser preenchido pra eles. Um inquilino perguntando algo do
+     universo de A2/A4 (pagamento, renovação) cai em A1 (se for
+     informativo) ou A5 (se precisar mesmo de uma decisão humana).
 
      Diferença importante do A3 em relação ao A1/A5: é multi-turno (máquina
      de estados), então depende de persistência de estado entre mensagens —
@@ -61,15 +66,21 @@ _RESPOSTA_A2_COMPROVANTE_ERRO = (
     "Ele foi registrado, mas pode ser necessário reenviar — nossa equipe vai verificar."
 )
 
-_RESPOSTA_AGENTE_NAO_IMPLEMENTADO = (
-    "Recebido! Sua mensagem foi identificada como assunto do Agente {agente} ({motivo}), "
-    "mas esse agente ainda não está implementado neste ambiente. Sua mensagem foi registrada."
+# Fallback de defesa em profundidade: com AgenteDestino restrito a A1/A3/A5
+# (ver classificador.py), o schema da tool nem permite mais o Claude devolver
+# outra coisa — este branch deveria ser inalcançável. Mantido só por
+# segurança, e por isso o texto é genérico de propósito: nunca deve
+# mencionar nome de agente, "ambiente", "implementado" ou qualquer outra
+# palavra que denuncie arquitetura interna pro inquilino (o inquilino nunca
+# pode perceber que está falando com um sistema multiagente).
+_RESPOSTA_FALLBACK_GENERICO = (
+    "Recebi sua mensagem! Já deixei registrado por aqui e alguém da nossa equipe "
+    "te retorna em breve."
 )
 
 _RESPOSTA_A5_SEM_CRITERIO = (
-    "Recebido! Isso pareceu um caso para a equipe humana, mas na análise mais detalhada "
-    "não se encaixou em nenhum critério objetivo de escalonamento — sua mensagem foi "
-    "registrada mesmo assim."
+    "Entendido! Já deixei registrado por aqui — se for necessário, alguém da "
+    "nossa equipe entra em contato."
 )
 
 
@@ -107,13 +118,17 @@ def rotear_mensagem(
     if classificacao.agente == "A5":
         return _rotear_para_a5(contract_id, texto, historico_conversa)
 
-    # TODO: A2-A4 ainda não têm lógica de negócio ligada aqui. agente_responsavel
-    # já registra o roteamento correto mesmo sem resposta real — útil para
-    # avaliar a precisão da classificação antes desses agentes existirem.
-    resposta = _RESPOSTA_AGENTE_NAO_IMPLEMENTADO.format(
-        agente=classificacao.agente, motivo=classificacao.motivo
+    # Inalcançável: AgenteDestino só aceita "A1"/"A3"/"A5" (ver
+    # classificador.py) — o schema da tool nem permite ao Claude devolver
+    # outro valor. Mantido por defesa em profundidade, não por expectativa
+    # real de uso.
+    logger.error(
+        "classificar_intencao devolveu agente inesperado %r para contrato %s — "
+        "isso não deveria ser possível com o schema atual.",
+        classificacao.agente,
+        contract_id,
     )
-    return resposta, classificacao.agente
+    return _RESPOSTA_FALLBACK_GENERICO, None
 
 
 def _rotear_para_a1(contract_id: str, texto: str, historico_conversa: str) -> tuple[str, Optional[str]]:
