@@ -314,20 +314,25 @@ export function CobrancasSection() {
       // continuava com o valor cheio pra sempre, inflando relatórios que
       // somam esse campo.
       //
-      // "Perdão Total" NÃO grava valor_esperado=0 aqui: a coluna tem
-      // `check (valor_esperado > 0)` (Migration 001) — um update pra 0
-      // violaria a constraint e falharia. O valor final "0" já fica
-      // registrado em charge_negotiations.tipo_resolucao='perdao_total';
-      // qualquer relatório que precise do valor de fato devido tem que
-      // considerar esse caso via join com charge_negotiations, não
-      // assumir que charges.valor_esperado reflete isso sozinho.
+      // "Perdão Total" grava 0.01, não 0: a coluna tem
+      // `check (valor_esperado > 0)` (Migration 001), então um update pra
+      // 0 exato violaria a constraint. 0.01 é o menor valor que passa
+      // nessa constraint sem precisar relaxá-la — é um "quase-zero"
+      // técnico, não um valor de negócio real. Qualquer relatório que some
+      // valor_esperado vai carregar esse resíduo de R$0,01 por perdão
+      // total; se isso incomodar em relatórios financeiros, a saída limpa
+      // é migrar a constraint pra `>= 0` (ou separar num campo
+      // valor_final) e voltar a gravar 0 exato.
       //
-      // "Negado" também não muda o valor (a cobrança segue em aberto pelo
-      // valor original).
+      // "Negado" não muda o valor (a cobrança segue em aberto pelo valor
+      // original).
+      const PERDAO_TOTAL_VALOR_RESIDUAL = 0.01;
       const updatePayload: { status: string; valor_esperado?: number } = {
         status: novoStatusCharge,
       };
-      if (form.tipo === "parcial") {
+      if (form.tipo === "total") {
+        updatePayload.valor_esperado = PERDAO_TOTAL_VALOR_RESIDUAL;
+      } else if (form.tipo === "parcial") {
         updatePayload.valor_esperado = valorNegociado as number;
       }
 
