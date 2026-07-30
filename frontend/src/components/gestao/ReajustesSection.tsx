@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, TrendingUp, Sparkles, Wrench, Gift } from "lucide-react";
+import { TrendingUp, Sparkles, Wrench, Gift } from "lucide-react";
 import { PageHeader } from "./PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,9 +15,6 @@ import { supabase } from "@/lib/supabase";
 
 const CONTRATOS_ATIVOS_KEY = ["contratos-ativos-reajuste"] as const;
 const REAJUSTES_ANIVERSARIO_KEY = ["contract-alerts-reajuste"] as const;
-const RENOVACOES_KEY = ["contract-alerts-renovacao"] as const;
-
-type Decisao = "" | "sugerido" | "manual" | "encerrar";
 
 const brl = (v: number) => `R$ ${v.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
 
@@ -48,7 +45,7 @@ async function fetchContratosAtivos(): Promise<ContratoAtivo[]> {
 }
 
 /* ============================================================
- * Dados: contract_alerts (reajuste de aniversário e renovação)
+ * Dados: contract_alerts (reajuste de aniversário)
  * ============================================================ */
 
 interface AlertaComContrato {
@@ -61,12 +58,12 @@ interface AlertaComContrato {
   valorSugerido: number | null;
 }
 
-async function fetchAlertas(tipo: "calculo_reajuste_d30" | "alerta_renovacao_d60"): Promise<AlertaComContrato[]> {
+async function fetchAlertas(tipo: "calculo_reajuste_d30"): Promise<AlertaComContrato[]> {
   // "contracts!inner" (em vez do embed padrão) é necessário pra poder filtrar
   // por contracts.status abaixo — sem o !inner, o filtro no relacionamento é
   // ignorado pelo PostgREST e alertas de contratos já inativos continuam
   // aparecendo na lista (era exatamente o bug: contrato desativado ainda
-  // mostrava reajuste/renovação pendente).
+  // mostrava reajuste pendente).
   const { data, error } = await supabase
     .from("contract_alerts")
     .select(
@@ -221,31 +218,31 @@ function ReajustesAniversarioSection() {
 
       if (!Number.isFinite(novo) || novo <= 0) throw new Error("Informe um valor válido");
 
-      const { error: alertError } = await supabase
+      // Não escrevemos em contracts.valor_aluguel aqui. O backend já tem um
+      // job diário (cron_listar_reajustes_para_aplicar + agent_aplicar_reajuste,
+      // Migration 010) que aplica o valor exatamente na data de aniversário
+      // (data_disparo + 30) e marca valor_aplicado — nunca antes disso. Esta
+      // tela só registra a decisão da gestora; se for ajuste manual, sobrescreve
+      // valor_sugerido com o valor escolhido (mesmo padrão descrito na
+      // Migration 010: não existe uma segunda coluna "valor_ajustado").
+      const { error } = await supabase
         .from("contract_alerts")
         .update({
           decisao_gestora: modo === "sugerido" ? "renovar_sugerido" : "renovar_ajustado",
-          valor_aplicado: novo,
+          ...(modo === "manual" ? { valor_sugerido: novo } : {}),
         })
         .eq("id", a.alertId);
-      if (alertError) throw alertError;
-
-      const { error: contractError } = await supabase
-        .from("contracts")
-        .update({ valor_aluguel: novo })
-        .eq("id", a.contractId);
-      if (contractError) throw contractError;
+      if (error) throw error;
 
       return novo;
     },
     onSuccess: (novo, a) => {
-      toast.success("Reajuste de aniversário aplicado", {
-        description: `${a.inquilino}: ${brl(a.valorAtual)} → ${brl(novo)}`,
+      toast.success("Decisão de reajuste registrada", {
+        description: `${a.inquilino}: ${brl(novo)} será aplicado automaticamente na data de aniversário.`,
       });
       queryClient.invalidateQueries({ queryKey: REAJUSTES_ANIVERSARIO_KEY });
-      queryClient.invalidateQueries({ queryKey: CONTRATOS_ATIVOS_KEY });
     },
-    onError: (error: Error) => toast.error(error.message || "Não foi possível aplicar o reajuste"),
+    onError: (error: Error) => toast.error(error.message || "Não foi possível registrar a decisão"),
   });
 
   return (
@@ -354,205 +351,8 @@ function ReajustesAniversarioSection() {
                         isPending || (modo === "manual" && (!Number.isFinite(manualNum) || manualNum <= 0))
                       }
                     >
-                      Aplicar reajuste
+                      Confirmar decisão
                     </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
-/* ============================================================
- * Seção 3: Renovação — contract_alerts tipo='alerta_renovacao_d60',
- * pendentes de decisão.
- * ============================================================ */
-
-function RenovacaoSection() {
-  const queryClient = useQueryClient();
-  const { data: items = [], isLoading } = useQuery({
-    queryKey: RENOVACOES_KEY,
-    queryFn: () => fetchAlertas("alerta_renovacao_d60"),
-  });
-  const [decisoes, setDecisoes] = useState<Record<string, Decisao>>({});
-  const [manuais, setManuais] = useState<Record<string, string>>({});
-
-  const confirmarMutation = useMutation({
-    mutationFn: async (a: AlertaComContrato) => {
-      const decisao = decisoes[a.alertId] ?? "";
-      if (!decisao) throw new Error("Selecione uma decisão");
-
-      if (decisao === "encerrar") {
-        const { error: alertError } = await supabase
-          .from("contract_alerts")
-          .update({ decisao_gestora: "encerrar" })
-          .eq("id", a.alertId);
-        if (alertError) throw alertError;
-
-        const { error: contractError } = await supabase
-          .from("contracts")
-          .update({ status: "inativo" })
-          .eq("id", a.contractId);
-        if (contractError) throw contractError;
-
-        return { novo: null as number | null, decisao };
-      }
-
-      const sugerido = a.valorSugerido ?? a.valorAtual * (1 + (a.percentualReajuste ?? 0) / 100);
-      const novo =
-        decisao === "sugerido" ? sugerido : parseFloat((manuais[a.alertId] ?? "").replace(",", "."));
-
-      if (decisao === "manual" && (!Number.isFinite(novo) || novo <= 0)) {
-        throw new Error("Informe um valor manual válido");
-      }
-
-      const { error: alertError } = await supabase
-        .from("contract_alerts")
-        .update({
-          decisao_gestora: decisao === "sugerido" ? "renovar_sugerido" : "renovar_ajustado",
-          valor_aplicado: novo,
-        })
-        .eq("id", a.alertId);
-      if (alertError) throw alertError;
-
-      const { error: contractError } = await supabase
-        .from("contracts")
-        .update({ valor_aluguel: novo })
-        .eq("id", a.contractId);
-      if (contractError) throw contractError;
-
-      return { novo, decisao };
-    },
-    onSuccess: ({ novo, decisao }, a) => {
-      if (decisao === "encerrar") {
-        toast.success("Contrato encerrado", {
-          description: `Fluxo de desativação iniciado para ${a.inquilino}.`,
-        });
-      } else {
-        toast.success("Renovação confirmada", {
-          description: `Valor atualizado para ${brl(novo!)} no próximo ciclo.`,
-        });
-      }
-      queryClient.invalidateQueries({ queryKey: RENOVACOES_KEY });
-      queryClient.invalidateQueries({ queryKey: CONTRATOS_ATIVOS_KEY });
-    },
-    onError: (error: Error) => toast.error(error.message || "Não foi possível confirmar a decisão"),
-  });
-
-  return (
-    <section>
-      <div className="flex items-center gap-2 mb-3">
-        <CalendarClock className="h-4 w-4 text-primary" />
-        <h2 className="text-lg font-semibold">Renovação</h2>
-      </div>
-      <p className="text-sm text-muted-foreground mb-4">
-        Contratos em janela de alerta (D-60 antes do término). Registre a decisão
-        administrativa — o valor é atualizado no contrato existente.
-      </p>
-
-      {isLoading ? (
-        <p className="text-sm text-muted-foreground">Carregando...</p>
-      ) : items.length === 0 ? (
-        <Card>
-          <CardContent className="p-6 text-sm text-muted-foreground">
-            Nenhum contrato em janela de renovação no momento.
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-4">
-          {items.map((a) => {
-            const sugerido = a.valorSugerido ?? a.valorAtual * (1 + (a.percentualReajuste ?? 0) / 100);
-            const decisao = decisoes[a.alertId] ?? "";
-            const isPending =
-              confirmarMutation.isPending && confirmarMutation.variables?.alertId === a.alertId;
-
-            return (
-              <Card key={a.alertId}>
-                <CardHeader className="flex flex-row items-start justify-between space-y-0">
-                  <div className="flex items-center gap-3">
-                    <Avatar name={a.inquilino} size={40} />
-                    <div>
-                      <CardTitle className="text-base flex items-center gap-1.5">
-                        {a.inquilino}
-                        <CalendarClock className="h-3.5 w-3.5 text-[var(--info-strong)]" />
-                      </CardTitle>
-                      <p className="text-xs text-muted-foreground">
-                        Término: {new Date(a.dataDisparo).toLocaleDateString("pt-BR")}
-                      </p>
-                    </div>
-                  </div>
-                  <Badge className="border-[var(--info-border)] bg-[var(--info-bg)] text-[var(--info-fg)] hover:bg-[var(--info-bg)]">D-60 Renovação</Badge>
-                </CardHeader>
-                <CardContent className="space-y-5">
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm bg-muted/30 rounded-lg p-4">
-                    <div>
-                      <div className="text-xs uppercase text-muted-foreground">Valor Atual</div>
-                      <div className="font-semibold tnum">{brl(a.valorAtual)}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs uppercase text-muted-foreground">Reajuste</div>
-                      <div className="font-semibold flex items-center gap-1 tnum text-[var(--success-accent)]">
-                        <TrendingUp className="h-3.5 w-3.5" />
-                        {(a.percentualReajuste ?? 0).toFixed(2)}%
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-xs uppercase text-muted-foreground">Valor Sugerido</div>
-                      <div className="font-semibold text-primary tnum">{brl(sugerido)}</div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <Label>Decisão</Label>
-                    <RadioGroup
-                      value={decisao}
-                      onValueChange={(v) =>
-                        setDecisoes((prev) => ({ ...prev, [a.alertId]: v as Decisao }))
-                      }
-                      className="grid gap-2"
-                    >
-                      <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
-                        <RadioGroupItem value="sugerido" id={`${a.alertId}-s`} />
-                        <span className="text-sm">Renovar com valor sugerido ({brl(sugerido)})</span>
-                      </label>
-                      <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
-                        <RadioGroupItem value="manual" id={`${a.alertId}-m`} />
-                        <span className="text-sm">Renovar com valor ajustado manualmente</span>
-                      </label>
-                      <label className="flex items-center gap-3 border rounded-lg p-3 cursor-pointer hover:bg-muted/40">
-                        <RadioGroupItem value="encerrar" id={`${a.alertId}-e`} />
-                        <span className="text-sm">Encerrar contrato</span>
-                      </label>
-                    </RadioGroup>
-
-                    {decisao === "manual" && (
-                      <div className="space-y-1.5">
-                        <Label>Novo valor (R$)</Label>
-                        <Input
-                          type="number"
-                          placeholder="0,00"
-                          value={manuais[a.alertId] ?? ""}
-                          onChange={(e) =>
-                            setManuais((prev) => ({ ...prev, [a.alertId]: e.target.value }))
-                          }
-                          className="max-w-xs"
-                        />
-                      </div>
-                    )}
-
-                    <div className="flex justify-end">
-                      <Button
-                        onClick={() => confirmarMutation.mutate(a)}
-                        disabled={isPending}
-                        variant={decisao === "encerrar" ? "destructive" : "default"}
-                      >
-                        {decisao === "encerrar" ? "Confirmar Encerramento" : "Confirmar Renovação"}
-                      </Button>
-                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -568,19 +368,17 @@ function RenovacaoSection() {
  * Componente exportado
  * ============================================================ */
 
-export function RenovacoesSection() {
+export function ReajustesSection() {
   return (
     <div className="space-y-10">
       <PageHeader
-        title="Renovações e Reajustes"
-        description="Reajustes manuais a qualquer momento, reajustes automáticos de aniversário e renovações em janela de alerta — tudo em um único painel."
+        title="Reajustes"
+        description="Reajustes manuais a qualquer momento e reajustes automáticos de aniversário — tudo em um único painel."
       />
 
       <ReajustesManuaisSection />
       <Separator />
       <ReajustesAniversarioSection />
-      <Separator />
-      <RenovacaoSection />
     </div>
   );
 }

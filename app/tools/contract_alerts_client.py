@@ -90,3 +90,23 @@ def aplicar_reajuste(alerta_id: UUID, contract_id: UUID, valor_aplicado: float) 
         {"p_alerta_id": str(alerta_id), "p_valor_aplicado": valor_aplicado},
     ).execute()
     return resultado.data is not None
+
+
+def finalizar_contrato(contract_id: UUID) -> bool:
+    """True se o contrato foi de fato desativado agora (status -> 'inativo').
+    False se já não estava mais 'ativo' no momento exato da escrita — pode
+    ter sido desativado por outra chamada deste mesmo job (retry) ou pela
+    gestora manualmente antes disso (ContratosSection.tsx, botão "Desativar
+    Contrato"). agent_finalizar_contrato reforça esse guard (where
+    status = 'ativo') dentro da própria transação; ver
+    docs/schemas/012_finalizacao_contrato_automatica.sql. Quem chama não
+    deve assumir sucesso silencioso quando isso retorna False — ver
+    app/agents/a4_gestao_contratual/fluxo.py::processar_finalizacao_contrato.
+
+    Escreve como agente_ia, escopado a contract_id — mesma razão de
+    registrar_alerta_renovacao/aplicar_reajuste acima. Diferente delas,
+    agent_finalizar_contrato não recebe nenhum parâmetro (só lê
+    agent_contract_id() do token), então o corpo do rpc() vai vazio."""
+    client = obter_client_agente(contract_id)
+    resultado = client.rpc("agent_finalizar_contrato", {}).execute()
+    return resultado.data is not None

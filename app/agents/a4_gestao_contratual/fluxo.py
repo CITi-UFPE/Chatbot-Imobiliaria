@@ -5,9 +5,19 @@
   Fluxo B — cálculo de reajuste D-30 + aplicação do valor confirmado no
             aniversário do contrato
 
-Cada contrato (e cada item da aplicação de reajuste) é processado
-isoladamente: um erro num contrato (ex: API do Banco Central fora do ar) não
-pode impedir que os demais contratos ativos sejam verificados no mesmo dia.
+Um terceiro passo, dentro do mesmo loop por contrato (não uma segunda
+leitura em lote — cron_listar_contratos_ativos já devolve data_termino para
+todo contrato ativo), finaliza todo contrato que chega em data_termino hoje
+— incondicionalmente, sem depender de nenhuma decisão da gestora (o painel
+de renovação é só aviso, sem interação). Só pode acontecer na data_termino
+real, nunca antes (ver Migration 012: desativar antes da hora quebra
+cobrança e roteamento por WhatsApp, que dependem de status='ativo' até o
+fim do contrato).
+
+Cada contrato (e cada item da aplicação de reajuste / finalização de
+contrato) é processado isoladamente: um erro num contrato (ex: API do Banco
+Central fora do ar) não pode impedir que os demais contratos ativos sejam
+verificados no mesmo dia.
 """
 
 import os
@@ -29,6 +39,7 @@ from app.tools.calculo_reajuste import (
 )
 from app.tools.contract_alerts_client import (
     aplicar_reajuste,
+    finalizar_contrato,
     listar_clausulas_financeiras,
     listar_contratos_ativos,
     listar_reajustes_para_aplicar,
@@ -47,6 +58,7 @@ class ResultadoExecucaoAlertas(BaseModel):
     alertas_renovacao: list[str] = Field(default_factory=list)
     calculos_reajuste: list[str] = Field(default_factory=list)
     reajustes_aplicados: list[UUID] = Field(default_factory=list)
+    contratos_finalizados: list[UUID] = Field(default_factory=list)
     erros: list[str] = Field(default_factory=list)
 
 
@@ -167,6 +179,36 @@ def _aplicar_reajustes_confirmados(hoje: date) -> tuple[list[UUID], list[str]]:
     return aplicados, erros
 
 
+def processar_finalizacao_contrato(
+    contrato: ContratoParaAlerta,
+    hoje: date,
+    *,
+    finalizar_contrato_fn: Callable[[UUID], bool],
+) -> Optional[UUID]:
+    """Mesmo estilo de processar_alerta_renovacao/processar_calculo_reajuste:
+    função pura, testável com um fake injetado em finalizar_contrato_fn, sem
+    precisar de uma segunda leitura em lote — contrato.data_termino já veio
+    de listar_contratos_ativos(), que o loop principal já percorre.
+
+    Incondicional: não depende de nenhuma decisão da gestora (o painel de
+    renovação é só aviso). Só pode acontecer na data_termino real (ver
+    Migration 012): fazer isso antes desligaria o contrato antes da hora,
+    quebrando cobrança e roteamento por WhatsApp, que dependem de
+    status='ativo' até o fim do contrato.
+
+    finalizar_contrato_fn pode devolver False sem lançar exceção — o guard
+    (status ainda 'ativo' no momento da escrita) é reforçado dentro da
+    própria função SQL (agent_finalizar_contrato). Isso não é descartado em
+    silêncio: quem chama decide o que fazer com o None devolvido."""
+    if contrato.data_termino != hoje:
+        return None
+
+    if not finalizar_contrato_fn(contrato.id):
+        return None  # já não estava mais 'ativo' — outra chamada já finalizou
+
+    return contrato.id
+
+
 def executar_alertas_contratuais(hoje: Optional[date] = None) -> ResultadoExecucaoAlertas:
     hoje = hoje or _hoje_no_fuso_do_projeto()
     resultado = ResultadoExecucaoAlertas()
@@ -193,6 +235,15 @@ def executar_alertas_contratuais(hoje: Optional[date] = None) -> ResultadoExecuc
                 resultado.calculos_reajuste.append(mensagem)
         except Exception as erro:  # noqa: BLE001
             resultado.erros.append(f"contrato {contrato.id} (cálculo de reajuste): {erro}")
+
+        try:
+            finalizado = processar_finalizacao_contrato(
+                contrato, hoje, finalizar_contrato_fn=finalizar_contrato
+            )
+            if finalizado:
+                resultado.contratos_finalizados.append(finalizado)
+        except Exception as erro:  # noqa: BLE001
+            resultado.erros.append(f"contrato {contrato.id} (finalização no término): {erro}")
 
     aplicados, erros_aplicacao = _aplicar_reajustes_confirmados(hoje)
     resultado.reajustes_aplicados = aplicados
