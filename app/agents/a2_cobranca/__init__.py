@@ -1,4 +1,4 @@
-from app.agents.a2_cobranca.cobranca import executar_cobranca_diaria
+from app.agents.a2_cobranca.cobranca import executar_cobranca_diaria, pausar_charges_em_negociacao
 from app.agents.a2_cobranca.comprovante import (
     confirmar_pagamento,
     confirmar_pagamento_combinado,
@@ -17,6 +17,9 @@ __all__ = [
     # Cron (chamado direto por app/jobs/cron_cobranca_diaria.py, não pelo
     # orquestrador de mensagens):
     "executar_cobranca_diaria",
+    # API pública pra outros agentes (hoje: orchestrator) pausarem cobrança durante
+    # negociação — ver docstring em cobranca.py:pausar_charges_em_negociacao
+    "pausar_charges_em_negociacao",
     # Funções internas — ainda exportadas pra quem precisar chamar direto
     # (ex: testes), mas processar_entrada_a2 é o caminho recomendado:
     "processar_comprovante_recebido",

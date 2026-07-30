@@ -35,6 +35,58 @@ TIMEZONE_COBRANCA = ZoneInfo("America/Recife")
 # esses casos, mesmo que a data bata com um estágio.
 STATUS_PAUSADOS = frozenset({"em_negociacao", "aguardando_confirmacao", "confirmado", "quitado"})
 
+# Status considerados "em aberto" pra fins de pausar_charges_em_negociacao
+# (Opção A) — charges nesse estado é que precisam ser movidas pra
+# 'em_negociacao' quando o orquestrador (via A5) detecta pedido de desconto.
+STATUS_CHARGES_ABERTAS = ("pendente", "atrasado")
+
+
+def pausar_charges_em_negociacao(contract_id: str) -> None:
+    """API pública do A2 pra outros módulos chamarem quando detectarem um
+    pedido de desconto/renegociação numa conversa (hoje, chamada por
+    app.orchestrator.orchestrator._rotear_para_a5, logo após
+    executar_escalonamento identificar motivo='desconto_renegociacao' — o
+    classificador de intenção já roteia esse tipo de pedido direto pro A5,
+    nunca pro A1) — mora aqui, não em quem chama, porque `charges` é dado
+    do domínio do A2. O chamador só decide QUANDO pausar; COMO pausar
+    (quais status, qual RPC, qual valor) é encapsulado aqui, no mesmo
+    espírito de avaliar_escalonamento/executar_escalonamento serem a
+    interface pública do A5 em vez de cada módulo reimplementar lógica de
+    escalonamento.
+
+    Opção A (decisão explícita, não tenta identificar a charge exata):
+    marca TODAS as charges em aberto (pendente/atrasado) do contrato como
+    'em_negociacao'. Não precisa de migration — 'em_negociacao' já é valor
+    válido no CHECK constraint de charges.status (Migration 001), e
+    agent_update_charge_status já aceita esse valor em p_status.
+
+    Efeito: STATUS_PAUSADOS (acima) já faz o cron ignorar essas charges
+    até a staff resolver via charge_negotiations (que muda o status pra
+    'quitado' ou 'atrasado' — ver CobrancasSection.tsx, resolverMutation).
+    """
+    client = obter_client_agente(contract_id)
+    resposta = (
+        client.table("charges")
+        .select("id")
+        .eq("contract_id", contract_id)
+        .in_("status", STATUS_CHARGES_ABERTAS)
+        .execute()
+    )
+    charges_abertas = resposta.data or []
+
+    for charge in charges_abertas:
+        try:
+            client.rpc(
+                "agent_update_charge_status",
+                {"p_charge_id": charge["id"], "p_status": "em_negociacao"},
+            ).execute()
+        except Exception:
+            logger.exception(
+                "Falha ao pausar charge %s (contrato %s) para negociação.",
+                charge["id"],
+                contract_id,
+            )
+
 
 def _determinar_estagio(dias_atraso: int) -> EstagioCobranca | None:
     if dias_atraso == -5:

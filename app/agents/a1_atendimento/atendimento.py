@@ -179,7 +179,7 @@ def _executar_buscar_dados_inquilino(contract_id: str) -> dict:
     # contract_id só escolhe QUAL client/token usar — a RPC em si não recebe
     # contract_id como argumento, ela resolve isso internamente via
     # agent_contract_id() lendo o claim do próprio JWT (ver migration
-    # 006_a1_rpcs.sql — número final pendente de coordenação de merge).
+    # 006_a1_rpcs.sql).
     client = obter_client_agente(contract_id)
     resposta = client.rpc("buscar_dados_inquilino", {}).execute()
     dados = resposta.data or {}
