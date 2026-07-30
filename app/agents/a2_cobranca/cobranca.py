@@ -63,37 +63,63 @@ def _processar_charge(charge_raw: dict, hoje: date) -> None:
         return  # pausa automática — negociação, análise de comprovante, ou já resolvido
 
     dias_atraso_hoje = (hoje - charge.data_vencimento).days
-    estagio = _determinar_estagio(dias_atraso_hoje)
-    if estagio is None:
-        return
-
-    if estagio == charge.mensagem_estagio:
-        return  # já mandamos a mensagem desse estágio, não repetir
-
-    client_agente = obter_client_agente(charge.contract_id)
-    dados_contrato = _buscar_dados_cobranca_contrato(client_agente)
-
-    texto = montar_mensagem(charge, dados_contrato, estagio, dias_atraso_hoje)
-    enviar_mensagem_cobranca(dados_contrato.telefone_whatsapp, texto)
-
     novo_status = "atrasado" if dias_atraso_hoje > 0 else charge.status
-    client_agente.rpc(
-        "agent_update_charge_status",
-        {
-            "p_charge_id": charge.charge_id,
-            "p_status": novo_status,
-            "p_dias_atraso": dias_atraso_hoje,
-            "p_mensagem_estagio": estagio,
-        },
-    ).execute()
 
-    if estagio == "d+15":
+    # Estágio de MENSAGEM (-5/0/5/10/15) é uma coisa; estado objetivo de
+    # atraso (dias_atraso/status) é outra. Antes as duas ficavam presas ao
+    # mesmo gate, e dias_atraso só avançava nos dias em que uma mensagem
+    # saía — subestimando o painel de gestão do 1º ao 4º dia (e em todo
+    # intervalo fora dos estágios). Agora dias_atraso/status são
+    # recalculados TODO dia; só mensagem_estagio (e o envio em si) ficam
+    # restritos aos estágios definidos.
+    estagio = _determinar_estagio(dias_atraso_hoje)
+    deve_enviar_mensagem = estagio is not None and estagio != charge.mensagem_estagio
+    novo_mensagem_estagio = estagio if deve_enviar_mensagem else charge.mensagem_estagio
+
+    client_agente = None
+
+    if deve_enviar_mensagem:
+        client_agente = obter_client_agente(charge.contract_id)
+        dados_contrato = _buscar_dados_cobranca_contrato(client_agente)
+
+        texto = montar_mensagem(charge, dados_contrato, estagio, dias_atraso_hoje)
+        enviar_mensagem_cobranca(dados_contrato.telefone_whatsapp, texto)
+
+    # Update é feito só quando algo de fato mudou — evita RPC (e write no
+    # banco) todo dia pra charges cujo dias_atraso já está correto (ex.:
+    # charges ainda não vencidas, onde dias_atraso_hoje é negativo e igual
+    # ao já registrado).
+    precisa_atualizar = (
+        dias_atraso_hoje != charge.dias_atraso
+        or novo_status != charge.status
+        or novo_mensagem_estagio != charge.mensagem_estagio
+    )
+    if precisa_atualizar:
+        if client_agente is None:
+            client_agente = obter_client_agente(charge.contract_id)
+        client_agente.rpc(
+            "agent_update_charge_status",
+            {
+                "p_charge_id": charge.charge_id,
+                "p_status": novo_status,
+                "p_dias_atraso": dias_atraso_hoje,
+                "p_mensagem_estagio": novo_mensagem_estagio,
+            },
+        ).execute()
+
+    if estagio == "d+15" and deve_enviar_mensagem:
         # Disparado pelo PROCESSO (este cron), não por mensagem do inquilino
         # — por isso não passa por avaliar_escalonamento (que só avalia
         # texto de conversa), e sim monta o AvaliacaoEscalonamento direto e
         # chama executar_escalonamento, reaproveitando o mesmo protocolo/
         # notificação do A5. Ver criterios.py: motivo="atraso_severo",
         # deteccao_via_mensagem=False.
+        #
+        # deve_enviar_mensagem=True aqui garante que só escalamos no dia em
+        # que d+15 é *alcançado pela primeira vez*, não em todo dia
+        # subsequente (16, 17, 18...) em que dias_atraso_hoje continua >= 15
+        # mas mensagem_estagio já é "d+15" — senão duplicaria o
+        # escalonamento a cada execução do cron.
         avaliacao = AvaliacaoEscalonamento(
             motivo="atraso_severo",
             descricao=(
