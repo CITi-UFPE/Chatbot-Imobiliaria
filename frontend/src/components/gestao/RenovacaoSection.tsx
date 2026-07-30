@@ -55,7 +55,19 @@ async function fetchAlertas(tipo: "alerta_renovacao_d60"): Promise<AlertaComCont
 
 function diasRestantes(dataDisparo: string): number {
   const diff = new Date(dataDisparo).getTime() - Date.now();
-  return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+  return Math.ceil(diff / (1000 * 60 * 60 * 24));
+}
+
+// Texto e variante de cor do prazo: enquanto está no futuro mostra a
+// contagem normal ("Faltam X dias"); quando a data já passou, em vez de
+// travar em "Faltam 0 dias" passa a mostrar "Vencido há X dias" para deixar
+// claro que o prazo já estourou.
+function prazoInfo(dataDisparo: string): { texto: string; vencido: boolean } {
+  const dias = diasRestantes(dataDisparo);
+  if (dias > 0) return { texto: `Faltam ${dias} ${dias === 1 ? "dia" : "dias"}`, vencido: false };
+  if (dias === 0) return { texto: "Vence hoje", vencido: false };
+  const atraso = Math.abs(dias);
+  return { texto: `Vencido há ${atraso} ${atraso === 1 ? "dia" : "dias"}`, vencido: true };
 }
 
 /* ============================================================
@@ -103,7 +115,7 @@ function RenovacaoSectionInner() {
         <div className="grid gap-4">
           {items.map((a) => {
             const sugerido = a.valorSugerido ?? a.valorAtual * (1 + (a.percentualReajuste ?? 0) / 100);
-            const dias = diasRestantes(a.dataDisparo);
+            const { texto: textoPrazo, vencido } = prazoInfo(a.dataDisparo);
 
             return (
               <Card key={a.alertId}>
@@ -120,8 +132,14 @@ function RenovacaoSectionInner() {
                       </p>
                     </div>
                   </div>
-                  <Badge className="border-[var(--info-border)] bg-[var(--info-bg)] text-[var(--info-fg)] hover:bg-[var(--info-bg)]">
-                    D-60 Renovação · Faltam {dias} {dias === 1 ? "dia" : "dias"}
+                  <Badge
+                    className={
+                      vencido
+                        ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-50 dark:border-red-900 dark:bg-red-950 dark:text-red-400"
+                        : "border-[var(--info-border)] bg-[var(--info-bg)] text-[var(--info-fg)] hover:bg-[var(--info-bg)]"
+                    }
+                  >
+                    D-60 Renovação · {textoPrazo}
                   </Badge>
                 </CardHeader>
                 <CardContent>

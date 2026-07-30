@@ -7,6 +7,8 @@ import {
   Clock,
   CloudUpload,
   FileText,
+  History,
+  ListFilter,
   Loader2,
   Sparkles,
   Upload,
@@ -104,11 +106,16 @@ export function ContratosSection() {
   const queryClient = useQueryClient();
   const [toDeactivate, setToDeactivate] = useState<ContractRow | null>(null);
   const [toReactivate, setToReactivate] = useState<ContractRow | null>(null);
+  const [apenasAtivos, setApenasAtivos] = useState(false);
 
   const { data: imoveis = [], isLoading, isError } = useQuery({
     queryKey: CONTRATOS_QUERY_KEY,
     queryFn: fetchContracts,
   });
+
+  const imoveisFiltrados = apenasAtivos
+    ? imoveis.filter((i) => i.status === "ativo")
+    : imoveis;
 
   const deactivateMutation = useMutation({
     mutationFn: async (contractId: string) => {
@@ -180,11 +187,34 @@ export function ContratosSection() {
           />
         </div>
 
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-sm text-muted-foreground">
+            {apenasAtivos
+              ? "Mostrando apenas contratos ativos."
+              : "Mostrando todos os contratos."}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setApenasAtivos((prev) => !prev)}
+          >
+            {apenasAtivos ? (
+              <>
+                <History className="h-4 w-4 mr-2" /> Ver todos
+              </>
+            ) : (
+              <>
+                <ListFilter className="h-4 w-4 mr-2" /> Ver só ativos
+              </>
+            )}
+          </Button>
+        </div>
+
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Imóveis Cadastrados</CardTitle>
             <CardDescription>
-              {isLoading ? "Carregando..." : `${imoveis.length} imóveis no total`}
+              {isLoading ? "Carregando..." : `${imoveisFiltrados.length} imóveis no total`}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -204,7 +234,7 @@ export function ContratosSection() {
                   </tr>
                 </thead>
                 <tbody>
-                  {imoveis.map((im) => (
+                  {imoveisFiltrados.map((im) => (
                     <tr key={im.id} className="border-t hover:bg-muted/30 transition-colors">
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">
