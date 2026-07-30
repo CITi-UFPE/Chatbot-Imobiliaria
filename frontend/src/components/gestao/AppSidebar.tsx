@@ -5,7 +5,7 @@ import type { SectionKey } from "@/routes/index";
 
 const items: { key: SectionKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "contratos", label: "Contratos", icon: FileText },
-  { key: "cobrancas", label: "Cobranças em Negociação", icon: HandCoins },
+  { key: "cobrancas", label: "Cobranças", icon: HandCoins },
   { key: "agua", label: "Consumo de Água", icon: Droplets },
   { key: "manutencao", label: "Manutenção", icon: Wrench },
   { key: "reajustes", label: "Reajustes", icon: TrendingUp },
