@@ -1,5 +1,5 @@
 -- ============================================================
--- MIGRATION 012 — Prazo indeterminado (Projeto Domingos)
+-- MIGRATION 013 — Prazo indeterminado (Projeto Domingos)
 -- ============================================================
 -- Origem: contrato do Elias (Sala Ubaias) já passou de data_termino e,
 -- pela cláusula 3.3, se renova automaticamente por inércia — ou seja,
@@ -26,7 +26,7 @@ alter table contracts
   add column if not exists prazo_indeterminado boolean not null default false;
 
 comment on column contracts.prazo_indeterminado is
-  'true = contrato renovado por inércia/prazo indeterminado (ex: cláusula 3.3). data_termino permanece preenchida (valor histórico, não usado para decisão) mas o Fluxo A do A4 (alerta de renovação D-60) ignora esses contratos — ver docs/schemas/012_prazo_indeterminado.sql e app/agents/a4_gestao_contratual/fluxo.py.';
+  'true = contrato renovado por inércia/prazo indeterminado (ex: cláusula 3.3). data_termino permanece preenchida (valor histórico, não usado para decisão) mas o Fluxo A do A4 (alerta de renovação D-60) E a finalização automática no término (Migration 012) ignoram esses contratos — ver docs/schemas/013_prazo_indeterminado.sql e app/agents/a4_gestao_contratual/fluxo.py.';
 
 -- cron_listar_contratos_ativos (Migration 010) precisa devolver esse
 -- campo pro A4 decidir se pula o Fluxo A. IMPORTANTE: "create or replace"
@@ -63,5 +63,9 @@ $$;
 grant execute on function cron_listar_contratos_ativos() to cron_batch;
 
 -- ============================================================
--- FIM DA MIGRATION 012
+-- FIM DA MIGRATION 013
 -- ============================================================
+-- OBS: esta migration precisa rodar DEPOIS da 012_finalizacao_contrato_automatica.sql
+-- (mesmo sem dependência de SQL entre as duas — a coluna prazo_indeterminado
+-- criada aqui é o que app/agents/a4_gestao_contratual/fluxo.py::processar_finalizacao_contrato
+-- passa a checar para não desativar contratos de prazo indeterminado).
