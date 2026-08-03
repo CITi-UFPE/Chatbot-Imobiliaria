@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageCircle, HandCoins, Wallet } from "lucide-react";
+import { MessageCircle, HandCoins, Wallet, ChevronDown, ChevronUp } from "lucide-react";
 import { PageHeader } from "./PageHeader";
 import { StatTile } from "./StatTile";
 import { Avatar } from "./Avatar";
@@ -22,6 +22,7 @@ import type { TipoResolucaoNegociacao } from "@/lib/database.types";
 
 const COBRANCAS_QUERY_KEY = ["charges-em-negociacao"] as const;
 const ATRASADAS_QUERY_KEY = ["charges-em-atraso"] as const;
+const PENDENTES_QUERY_KEY = ["charges-pendentes"] as const;
 
 type Tipo = "" | "total" | "parcial" | "negado";
 
@@ -80,6 +81,48 @@ async function fetchNegociacoes(): Promise<Negociacao[]> {
       year: "numeric",
     }),
     valor: Number(row.valor_esperado),
+  }));
+}
+
+// Linha de charge ainda não vencida/atrasada (status='pendente'). Sem
+// cálculo de multa/juros — isso só existe pra charges já em atraso — por
+// isso o campo é só "valorEsperado", sem o par valorInicial/valorFinal do
+// Atraso. Usada pra resolução manual (comprovante enviado direto pra
+// gestão do imóvel, fora do fluxo automático de cobrança do A2).
+interface Pendente {
+  chargeId: string;
+  contractId: string;
+  inquilino: string;
+  imovel: string;
+  telefone: string | null;
+  mes: string;
+  dataVencimento: string; // ISO (yyyy-mm-dd), como vem de charges.data_vencimento
+  valorEsperado: number;
+}
+
+async function fetchPendentes(): Promise<Pendente[]> {
+  const { data, error } = await supabase
+    .from("charges")
+    .select(
+      "id, contract_id, mes_referencia, valor_esperado, data_vencimento, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp)",
+    )
+    .eq("status", "pendente")
+    .order("data_vencimento", { ascending: true });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row: any) => ({
+    chargeId: row.id,
+    contractId: row.contract_id,
+    inquilino: row.contracts?.inquilino_nome ?? "—",
+    imovel: row.contracts?.imovel_endereco ?? "—",
+    telefone: row.contracts?.telefone_whatsapp ?? null,
+    mes: new Date(row.mes_referencia).toLocaleDateString("pt-BR", {
+      month: "long",
+      year: "numeric",
+    }),
+    dataVencimento: row.data_vencimento,
+    valorEsperado: Number(row.valor_esperado),
   }));
 }
 
@@ -240,14 +283,141 @@ function AtrasoCard({
   );
 }
 
+function PendenteCard({
+  n,
+  isPending,
+  form,
+  onChangeForm,
+  onMarcarPago,
+}: {
+  n: Pendente;
+  isPending: boolean;
+  form: PagamentoFormState;
+  onChangeForm: (patch: Partial<PagamentoFormState>) => void;
+  onMarcarPago: () => void;
+}) {
+  const valorInvalido = form.valorPago !== "" && Number(form.valorPago) <= 0;
+
+  return (
+    <Card key={n.chargeId}>
+      <CardHeader className="flex flex-row items-start justify-between space-y-0">
+        <div className="flex items-center gap-3">
+          <Avatar name={n.inquilino} size={36} />
+          <div>
+            <CardTitle className="text-base">{n.inquilino}</CardTitle>
+            <p className="text-sm text-muted-foreground mt-1">{n.imovel}</p>
+          </div>
+        </div>
+        <Badge variant="outline">
+          Vence {new Date(n.dataVencimento).toLocaleDateString("pt-BR")}
+        </Badge>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+          <div>
+            <div className="text-xs uppercase text-muted-foreground">Mês de Referência</div>
+            <div className="font-medium">{n.mes}</div>
+          </div>
+          <div>
+            <div className="text-xs uppercase text-muted-foreground">Valor Esperado</div>
+            <div className="font-semibold text-lg tnum">
+              R$ {n.valorEsperado.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs uppercase text-muted-foreground">Vencimento</div>
+            <div className="font-medium">
+              {new Date(n.dataVencimento).toLocaleDateString("pt-BR")}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs uppercase text-muted-foreground">Telefone</div>
+            <div className="font-medium">
+              {n.telefone ?? <span className="text-muted-foreground italic">Não Registrado</span>}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid sm:grid-cols-[1fr,1fr,auto] gap-3 items-end pt-2 border-t">
+          <div className="space-y-1.5">
+            <Label>Data do Pagamento</Label>
+            <Input
+              type="date"
+              value={form.dataPagamento}
+              onChange={(e) => onChangeForm({ dataPagamento: e.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Valor Pago (R$)</Label>
+            <Input
+              type="number"
+              step="0.01"
+              placeholder="0,00"
+              value={form.valorPago}
+              onChange={(e) => onChangeForm({ valorPago: e.target.value })}
+              aria-invalid={valorInvalido}
+            />
+          </div>
+          <Button
+            onClick={onMarcarPago}
+            disabled={isPending || !form.dataPagamento || !form.valorPago || valorInvalido}
+          >
+            {isPending ? "Confirmando..." : "Marcar como Pago"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Cabeçalho clicável reutilizado pelas quatro seções da tela — cada uma
+// controla seu próprio booleano de aberto/fechado (openSections), então
+// recolher uma não afeta as outras.
+function SectionToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={onClick}
+      aria-label={open ? "Recolher seção" : "Expandir seção"}
+      className="shrink-0 mt-1"
+    >
+      {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+    </Button>
+  );
+}
+
 export function CobrancasSection() {
   const queryClient = useQueryClient();
   const [forms, setForms] = useState<Record<string, FormState>>({});
   const [pagamentoForms, setPagamentoForms] = useState<Record<string, PagamentoFormState>>({});
+  const [pagamentoFormsPendentes, setPagamentoFormsPendentes] = useState<
+    Record<string, PagamentoFormState>
+  >({});
+
+  // Controla individualmente se cada uma das 4 seções está aberta ou
+  // fechada — todas começam abertas.
+  const [openSections, setOpenSections] = useState({
+    negociacao: true,
+    pendentes: true,
+    atrasoLeve: true,
+    atrasoCritico: true,
+  });
+  const toggleSection = (key: keyof typeof openSections) =>
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
 
   const { data: items = [], isLoading, isError } = useQuery({
     queryKey: COBRANCAS_QUERY_KEY,
     queryFn: fetchNegociacoes,
+  });
+
+  const {
+    data: pendentes = [],
+    isLoading: isLoadingPendentes,
+    isError: isErrorPendentes,
+  } = useQuery({
+    queryKey: PENDENTES_QUERY_KEY,
+    queryFn: fetchPendentes,
   });
 
   const {
@@ -277,6 +447,21 @@ export function CobrancasSection() {
     setPagamentoForms((prev) => ({
       ...prev,
       [n.chargeId]: { ...getPagamentoForm(n), ...patch },
+    }));
+
+  // Mesmo padrão do getPagamentoForm/updatePagamentoForm de atrasadas,
+  // mas com estado separado (pagamentoFormsPendentes) — aqui o default do
+  // valor é valorEsperado puro (sem multa/juros, charge ainda não está em
+  // atraso).
+  const getPagamentoFormPendente = (n: Pendente): PagamentoFormState =>
+    pagamentoFormsPendentes[n.chargeId] ?? {
+      dataPagamento: hojeISO(),
+      valorPago: n.valorEsperado.toFixed(2),
+    };
+  const updatePagamentoFormPendente = (n: Pendente, patch: Partial<PagamentoFormState>) =>
+    setPagamentoFormsPendentes((prev) => ({
+      ...prev,
+      [n.chargeId]: { ...getPagamentoFormPendente(n), ...patch },
     }));
 
   const resolverMutation = useMutation({
@@ -424,29 +609,73 @@ export function CobrancasSection() {
     });
   };
 
+  // Resolução manual pra charges ainda não vencidas/atrasadas — mesmo
+  // caso de uso do marcarPagoMutation acima (comprovante enviado direto
+  // pra gestão, fora do fluxo automático), mutation própria só pra manter
+  // a invalidação de query separada (PENDENTES_QUERY_KEY em vez de
+  // ATRASADAS_QUERY_KEY).
+  const marcarPagoPendenteMutation = useMutation({
+    mutationFn: async ({
+      chargeId,
+      dataPagamento,
+      valorPago,
+    }: {
+      chargeId: string;
+      dataPagamento: string;
+      valorPago: number;
+    }) => {
+      const { error } = await supabase
+        .from("charges")
+        .update({
+          status: "quitado",
+          data_pagamento: dataPagamento,
+          valor_identificado: valorPago,
+        })
+        .eq("id", chargeId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Cobrança marcada como paga", {
+        description: "Pagamento confirmado direto com a gestão, fora do fluxo automático de cobrança.",
+        icon: <MessageCircle className="h-4 w-4" />,
+      });
+      queryClient.invalidateQueries({ queryKey: PENDENTES_QUERY_KEY });
+    },
+    onError: (error: Error) => {
+      console.error("Erro ao marcar cobrança pendente como paga:", error);
+      toast.error(error.message || "Não foi possível marcar como paga. Tente novamente.");
+    },
+  });
+
+  const handleMarcarPagoPendente = (n: Pendente) => {
+    const form = getPagamentoFormPendente(n);
+    const valorPago = Number(form.valorPago);
+    if (!form.dataPagamento || !valorPago || valorPago <= 0) {
+      toast.error("Informe a data e o valor pago antes de confirmar.");
+      return;
+    }
+    marcarPagoPendenteMutation.mutate({
+      chargeId: n.chargeId,
+      dataPagamento: form.dataPagamento,
+      valorPago,
+    });
+  };
+
   return (
     <div className="space-y-10">
       <div>
-        <PageHeader
-          title="Cobranças em Negociação"
-          description="Gerencie perdões, descontos parciais e negações."
-        />
-        <div className="grid gap-4 sm:grid-cols-2 mb-6">
-          <StatTile
-            tone="c"
-            icon={<HandCoins className="h-5 w-5" />}
-            label="Em Negociação"
-            value={items.length}
-            sublabel="cobranças pendentes"
+        <div className="flex items-start justify-between gap-4">
+          <PageHeader
+            title="Cobranças em Negociação"
+            description="Gerencie perdões, descontos parciais e negações."
           />
-          <StatTile
-            tone="b"
-            icon={<Wallet className="h-5 w-5" />}
-            label="Valor Total"
-            value={`R$ ${items.reduce((acc, n) => acc + n.valor, 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
-            sublabel="somado das negociações"
+          <SectionToggle
+            open={openSections.negociacao}
+            onClick={() => toggleSection("negociacao")}
           />
         </div>
+        {openSections.negociacao && (
+        <>
         {isError && (
           <p className="text-sm text-destructive mb-4">
             Não foi possível carregar as cobranças em negociação. Verifique sua sessão e tente novamente.
@@ -540,13 +769,100 @@ export function CobrancasSection() {
             </p>
           )}
         </div>
+        </>
+        )}
       </div>
 
       <div>
-        <PageHeader
-          title="Em Atraso (1-14 dias)"
-          description="Cobranças ainda dentro do fluxo automático de mensagens."
-        />
+        <div className="flex items-start justify-between gap-4">
+          <PageHeader
+            title="Cobranças em Dia (Resolução Manual)"
+            description="Ainda não vencidas ou não atrasadas. Cobrança resolvida manualmente (comprovante enviado direto pra gestão, fora do fluxo automático de cobrança)."
+          />
+          <SectionToggle
+            open={openSections.pendentes}
+            onClick={() => toggleSection("pendentes")}
+          />
+        </div>
+        {openSections.pendentes && (
+        <>
+        <div className="grid gap-4 sm:grid-cols-2 mb-6">
+          <StatTile
+            tone="c"
+            icon={<HandCoins className="h-5 w-5" />}
+            label="Em Dia"
+            value={pendentes.length}
+            sublabel="Cobranças aguardando vencimento"
+          />
+          <StatTile
+            tone="b"
+            icon={<Wallet className="h-5 w-5" />}
+            label="Valor Total"
+            value={`R$ ${pendentes.reduce((acc, n) => acc + n.valorEsperado, 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
+            sublabel="Somado das cobranças em dia"
+          />
+        </div>
+        {isErrorPendentes && (
+          <p className="text-sm text-destructive mb-4">
+            Não foi possível carregar as cobranças pendentes.
+          </p>
+        )}
+        <div className="grid gap-4">
+          {isLoadingPendentes && (
+            <p className="text-sm text-muted-foreground text-center py-8">Carregando...</p>
+          )}
+          {pendentes.map((n) => (
+            <PendenteCard
+              key={n.chargeId}
+              n={n}
+              isPending={
+                marcarPagoPendenteMutation.isPending &&
+                marcarPagoPendenteMutation.variables?.chargeId === n.chargeId
+              }
+              form={getPagamentoFormPendente(n)}
+              onChangeForm={(patch) => updatePagamentoFormPendente(n, patch)}
+              onMarcarPago={() => handleMarcarPagoPendente(n)}
+            />
+          ))}
+          {!isLoadingPendentes && pendentes.length === 0 && (
+            <p className="text-sm text-muted-foreground text-center py-8">
+              Nenhuma cobrança pendente aguardando vencimento.
+            </p>
+          )}
+        </div>
+        </>
+        )}
+      </div>
+
+      <div>
+        <div className="flex items-start justify-between gap-4">
+          <PageHeader
+            title="Em Atraso (1-14 dias)"
+            description="Cobranças ainda dentro do fluxo automático de mensagens."
+          />
+          <SectionToggle
+            open={openSections.atrasoLeve}
+            onClick={() => toggleSection("atrasoLeve")}
+          />
+        </div>
+        {openSections.atrasoLeve && (
+        <>
+        <div className="grid gap-4 sm:grid-cols-2 mb-6">
+          <StatTile
+            tone="c"
+            icon={<HandCoins className="h-5 w-5" />}
+            label="Em Atraso Leve"
+            value={atrasadasLeves.length}
+            sublabel="Cobranças de 1 a 14 dias"
+          />
+          <StatTile
+            tone="b"
+            icon={<Wallet className="h-5 w-5" />}
+            label="Valor Total"
+            value={`R$ ${atrasadasLeves.reduce((acc, n) => acc + n.valorFinal, 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
+            sublabel="Somado das cobranças em atraso leve"
+          />
+        </div>
         {isErrorAtrasadas && (
           <p className="text-sm text-destructive mb-4">
             Não foi possível carregar as cobranças em atraso.
@@ -575,13 +891,39 @@ export function CobrancasSection() {
             </p>
           )}
         </div>
+        </>
+        )}
       </div>
 
       <div>
-        <PageHeader
-          title="Em Atraso Crítico (15+ dias)"
-          description="Cobrança já escalonada — resolução manual necessária."
-        />
+        <div className="flex items-start justify-between gap-4">
+          <PageHeader
+            title="Em Atraso Crítico (15+ dias)"
+            description="Cobrança já escalonada — resolução manual necessária."
+          />
+          <SectionToggle
+            open={openSections.atrasoCritico}
+            onClick={() => toggleSection("atrasoCritico")}
+          />
+        </div>
+        {openSections.atrasoCritico && (
+        <>
+        <div className="grid gap-4 sm:grid-cols-2 mb-6">
+          <StatTile
+            tone="c"
+            icon={<HandCoins className="h-5 w-5" />}
+            label="Atraso Crítico"
+            value={atrasadasCriticas.length}
+            sublabel="Cobranças de 15+ dias"
+          />
+          <StatTile
+            tone="b"
+            icon={<Wallet className="h-5 w-5" />}
+            label="Valor Total"
+            value={`R$ ${atrasadasCriticas.reduce((acc, n) => acc + n.valorFinal, 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
+            sublabel="Somado das cobranças em atraso crítico"
+          />
+        </div>
         <div className="grid gap-4">
           {atrasadasCriticas.map((n) => (
             <AtrasoCard
@@ -602,6 +944,8 @@ export function CobrancasSection() {
             </p>
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   );

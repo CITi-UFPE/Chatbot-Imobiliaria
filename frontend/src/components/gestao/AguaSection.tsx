@@ -136,7 +136,9 @@ async function extrairEIdentificarContrato(
 
 // Limiares para classificar o cenário de correspondência — ver a
 // "Regra de decisão" do fluxo híbrido. Ajustável conforme a
-// qualidade real das pontuações devolvidas pela IA.
+// qualidade real das pontuações devolvidas pela IA. A pontuação em si
+// nunca é mostrada ao usuário (ver CandidatoCard) — só orienta qual
+// cenário de conferência é exibido.
 const CONFIANCA_MINIMA = 0.7;
 const DIFERENCA_MINIMA_DESEMPATE = 0.2;
 
@@ -575,6 +577,9 @@ function CandidatoCard({
   selecionado: boolean;
   onSelecionar: () => void;
 }) {
+  // A pontuação de confiança nunca é exibida ao usuário — ela só orienta,
+  // por trás dos panos, qual cenário de conferência aparece na tela
+  // (ver classificarCenario). Aqui, o badge é sempre qualitativo.
   return (
     <button
       type="button"
@@ -587,7 +592,7 @@ function CandidatoCard({
       <div className="flex items-center justify-between gap-2 mb-1">
         <span className="font-medium">{candidato.imovel_identificacao}</span>
         <Badge variant={candidato.confianca >= CONFIANCA_MINIMA ? "default" : "secondary"}>
-          {Math.round(candidato.confianca * 100)}% de confiança
+          Sugestão da IA
         </Badge>
       </div>
       <div className="text-xs text-muted-foreground mb-2">{candidato.imovel_endereco}</div>
