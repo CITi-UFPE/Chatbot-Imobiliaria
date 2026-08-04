@@ -18,6 +18,16 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 
@@ -169,6 +179,20 @@ function dataVencimentoDoMes(diaVencimento: number, mesReferenciaISO: string): s
   return `${ano}-${mes}-${String(diaVencimento).padStart(2, "0")}`;
 }
 
+function formatarDataBR(dataISO: string | undefined): string {
+  if (!dataISO) return "";
+  const [ano, mes, dia] = dataISO.split("-");
+  return `${dia}/${mes}/${ano}`;
+}
+
+function diferencaEmDias(dataInicioISO: string, dataFimISO: string): number {
+  // Meio-dia UTC fixo pras duas pontas, pra não sofrer com fuso horário nem
+  // com horário de verão na subtração.
+  const inicio = new Date(`${dataInicioISO}T00:00:00Z`);
+  const fim = new Date(`${dataFimISO}T00:00:00Z`);
+  return Math.round((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
+}
+
 interface CamposExtraidos {
   condominio: string;
   apartamento: string;
@@ -199,6 +223,11 @@ export function ComprovanteAguaUpload() {
   const [buscaManual, setBuscaManual] = useState("");
   const [modoBuscaManual, setModoBuscaManual] = useState(false);
   const [contratoSelecionadoId, setContratoSelecionadoId] = useState<string | null>(null);
+  // Preenchido só quando a data de vencimento calculada já passou — controla
+  // o AlertDialog de confirmação antes de gravar a cobrança como atrasada.
+  const [contaVencidaPendente, setContaVencidaPendente] = useState<{ dataVencimento: string } | null>(
+    null,
+  );
 
   const { data: contratosAtivos = [] } = useQuery({
     queryKey: CONTRATOS_ATIVOS_QUERY_KEY,
@@ -225,6 +254,7 @@ export function ComprovanteAguaUpload() {
     setBuscaManual("");
     setModoBuscaManual(false);
     setContratoSelecionadoId(null);
+    setContaVencidaPendente(null);
   };
 
   const handleFile = (f: File | null) => {
@@ -288,7 +318,7 @@ export function ComprovanteAguaUpload() {
   };
 
   const confirmarMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (opts: { statusForcado?: "atrasado" } = {}) => {
       if (!contratoSelecionado) throw new Error("Selecione o contrato correspondente");
       if (!campos.valorTotal || campos.valorTotal <= 0) throw new Error("Informe um valor válido");
       if (!campos.periodoInicio) throw new Error("Informe o período de referência");
@@ -296,18 +326,32 @@ export function ComprovanteAguaUpload() {
       const mesReferencia = primeiroDiaDoMes(campos.periodoInicio);
       const dataVencimento = dataVencimentoDoMes(contratoSelecionado.dia_vencimento, mesReferencia);
 
+      // Quando o usuário confirma o lançamento de uma conta já vencida (ver
+      // handleConfirmarClick), calculamos os dias de atraso na hora — reflete
+      // o atraso já existente no momento do lançamento, não é recalculado depois.
+      const diasAtraso =
+        opts.statusForcado === "atrasado"
+          ? Math.max(0, diferencaEmDias(dataVencimento, new Date().toISOString().slice(0, 10)))
+          : 0;
+
       // Grava apenas a cobrança esperada do mês, com base na leitura da
       // conta de água. valor_identificado, comprovante_url e
       // data_identificada_comprovante ficam nulos de propósito: só são
       // preenchidos depois, quando o inquilino enviar o comprovante de
       // pagamento (fluxo separado). data_pagamento e mensagem_estagio
-      // também ficam nulos, e status assume o default 'pendente' da tabela.
+      // também ficam nulos. status assume o default 'pendente' da tabela,
+      // a não ser que o usuário tenha confirmado o lançamento de uma conta
+      // já vencida (ver handleConfirmarClick) — nesse caso grava 'atrasado'
+      // e os dias_atraso já calculados.
       const { error: insertError } = await supabase.from("charges").insert({
         contract_id: contratoSelecionado.id,
         tipo: "agua",
         mes_referencia: mesReferencia,
         valor_esperado: campos.valorTotal,
         data_vencimento: dataVencimento,
+        ...(opts.statusForcado
+          ? { status: opts.statusForcado, dias_atraso: diasAtraso }
+          : {}),
       });
 
       if (insertError) {
@@ -328,6 +372,28 @@ export function ComprovanteAguaUpload() {
     },
   });
 
+  // Verificação de conta vencida: só dispara a mutation direto se a data de
+  // vencimento calculada (contrato + período) ainda não passou. Se já
+  // passou, abre o AlertDialog e espera a decisão do usuário em vez de
+  // gravar de imediato.
+  const handleConfirmarClick = () => {
+    if (!contratoSelecionado || !campos.periodoInicio) {
+      confirmarMutation.mutate({});
+      return;
+    }
+
+    const mesReferencia = primeiroDiaDoMes(campos.periodoInicio);
+    const dataVencimento = dataVencimentoDoMes(contratoSelecionado.dia_vencimento, mesReferencia);
+    const hojeISO = new Date().toISOString().slice(0, 10);
+
+    if (dataVencimento < hojeISO) {
+      setContaVencidaPendente({ dataVencimento });
+      return;
+    }
+
+    confirmarMutation.mutate({});
+  };
+
   const contratosFiltrados = contratosAtivos.filter((c) => {
     const termo = buscaManual.trim().toLowerCase();
     if (!termo) return true;
@@ -340,6 +406,7 @@ export function ComprovanteAguaUpload() {
   const candidatosOrdenados = [...candidatos].sort((a, b) => b.confianca - a.confianca);
 
   return (
+    <>
     <Card>
       <CardHeader>
         <CardTitle className="text-lg flex items-center gap-2">
@@ -548,7 +615,7 @@ export function ComprovanteAguaUpload() {
                   Cancelar
                 </Button>
                 <Button
-                  onClick={() => confirmarMutation.mutate()}
+                  onClick={handleConfirmarClick}
                   disabled={!contratoSelecionadoId || confirmarMutation.isPending}
                 >
                   {confirmarMutation.isPending ? (
@@ -565,6 +632,42 @@ export function ComprovanteAguaUpload() {
         )}
       </CardContent>
     </Card>
+
+    <AlertDialog
+      open={!!contaVencidaPendente}
+      onOpenChange={(open) => {
+        if (!open) setContaVencidaPendente(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Conta já vencida</AlertDialogTitle>
+          <AlertDialogDescription>
+            A data de vencimento desta cobrança ({formatarDataBR(contaVencidaPendente?.dataVencimento)}
+            ) já passou. Tem certeza que deseja lançar essa conta mesmo assim?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            onClick={() => {
+              setContaVencidaPendente(null);
+              resetar();
+            }}
+          >
+            Não, cancelar
+          </AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              setContaVencidaPendente(null);
+              confirmarMutation.mutate({ statusForcado: "atrasado" });
+            }}
+          >
+            Sim, lançar mesmo assim
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 
