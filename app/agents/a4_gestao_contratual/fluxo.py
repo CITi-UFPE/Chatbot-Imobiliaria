@@ -8,11 +8,13 @@
 Um terceiro passo, dentro do mesmo loop por contrato (não uma segunda
 leitura em lote — cron_listar_contratos_ativos já devolve data_termino para
 todo contrato ativo), finaliza todo contrato que chega em data_termino hoje
-— incondicionalmente, sem depender de nenhuma decisão da gestora (o painel
-de renovação é só aviso, sem interação). Só pode acontecer na data_termino
-real, nunca antes (ver Migration 012: desativar antes da hora quebra
-cobrança e roteamento por WhatsApp, que dependem de status='ativo' até o
-fim do contrato).
+— sem depender de nenhuma decisão da gestora (o painel de renovação é só
+aviso, sem interação), EXCETO contratos de prazo indeterminado (Migration
+013), cujo data_termino é só um valor histórico, nunca uma data real de
+encerramento. Fora esse caso, só pode acontecer na data_termino real, nunca
+antes (ver Migration 012: desativar antes da hora quebra cobrança e
+roteamento por WhatsApp, que dependem de status='ativo' até o fim do
+contrato).
 
 Cada contrato (e cada item da aplicação de reajuste / finalização de
 contrato) é processado isoladamente: um erro num contrato (ex: API do Banco
@@ -82,7 +84,7 @@ def processar_alerta_renovacao(
     # Contratos de prazo indeterminado (ex: renovação por inércia, cláusula
     # 3.3) não têm mais uma data de término real — data_termino aqui é só
     # um valor histórico. Pular o Fluxo A pra eles é deliberado, não uma
-    # omissão: ver docs/schemas/012_prazo_indeterminado.sql.
+    # omissão: ver docs/schemas/013_prazo_indeterminado.sql.
     if contrato.prazo_indeterminado:
         return None
 
@@ -199,7 +201,18 @@ def processar_finalizacao_contrato(
     finalizar_contrato_fn pode devolver False sem lançar exceção — o guard
     (status ainda 'ativo' no momento da escrita) é reforçado dentro da
     própria função SQL (agent_finalizar_contrato). Isso não é descartado em
-    silêncio: quem chama decide o que fazer com o None devolvido."""
+    silêncio: quem chama decide o que fazer com o None devolvido.
+
+    Contratos de prazo indeterminado (Migration 013) NUNCA finalizam por
+    esta via — data_termino, pra eles, é um valor histórico/decorativo, não
+    uma data real de encerramento (a renovação por inércia não tem fim
+    previsto). Sem este guard, um contrato de prazo indeterminado cujo
+    data_termino "decorativo" um dia coincidisse com `hoje` seria desativado
+    por engano, incondicionalmente — o mesmo risco que motivou o guard
+    equivalente em processar_alerta_renovacao acima."""
+    if contrato.prazo_indeterminado:
+        return None
+
     if contrato.data_termino != hoje:
         return None
 

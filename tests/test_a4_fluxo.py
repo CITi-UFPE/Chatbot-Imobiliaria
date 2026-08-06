@@ -8,6 +8,7 @@ from app.agents.a4_gestao_contratual.fluxo import (
     executar_alertas_contratuais,
     processar_alerta_renovacao,
     processar_calculo_reajuste,
+    processar_finalizacao_contrato,
 )
 from app.models.contract_alerts import ContratoParaAlerta
 
@@ -75,6 +76,74 @@ class TestProcessarAlertaRenovacao:
         )
 
         assert resultado is None
+
+    def test_prazo_indeterminado_nunca_dispara_alerta_mesmo_na_janela(self):
+        """Contrato de prazo indeterminado (Migration 013) — data_termino é só
+        um valor histórico, não deve gerar alerta de renovação mesmo que
+        coincida com a janela D-60 (regressão)."""
+        contrato = _contrato(
+            data_inicio=date(2025, 9, 13), data_termino=date(2026, 9, 13), prazo_indeterminado=True
+        )
+        registrar = RegistroChamadas()
+
+        resultado = processar_alerta_renovacao(
+            contrato, date(2026, 7, 15), registrar_alerta_renovacao_fn=registrar
+        )
+
+        assert resultado is None
+        assert not registrar.chamadas
+
+
+class TestProcessarFinalizacaoContrato:
+    def test_fora_da_data_termino_nao_finaliza(self):
+        contrato = _contrato(data_termino=date(2026, 9, 13))
+        finalizar = RegistroChamadas()
+
+        resultado = processar_finalizacao_contrato(
+            contrato, date(2026, 7, 15), finalizar_contrato_fn=finalizar
+        )
+
+        assert resultado is None
+        assert not finalizar.chamadas
+
+    def test_na_data_termino_finaliza(self):
+        contrato = _contrato(data_termino=date(2026, 7, 15))
+        finalizar = RegistroChamadas(retorno=True)
+
+        resultado = processar_finalizacao_contrato(
+            contrato, date(2026, 7, 15), finalizar_contrato_fn=finalizar
+        )
+
+        assert resultado == CONTRACT_ID
+        assert finalizar.chamadas == [(CONTRACT_ID,)]
+
+    def test_finalizar_contrato_fn_retorna_false_sem_excecao(self):
+        """Já não estava mais 'ativo' (outra chamada já finalizou) — não é
+        erro, só devolve None sem propagar."""
+        contrato = _contrato(data_termino=date(2026, 7, 15))
+        finalizar = RegistroChamadas(retorno=False)
+
+        resultado = processar_finalizacao_contrato(
+            contrato, date(2026, 7, 15), finalizar_contrato_fn=finalizar
+        )
+
+        assert resultado is None
+
+    def test_prazo_indeterminado_nunca_finaliza_mesmo_na_data_termino(self):
+        """Regressão do bug encontrado: a finalização automática (Migration
+        012) não checava prazo_indeterminado (Migration 013) — um contrato
+        de prazo indeterminado cujo data_termino "decorativo" coincidisse
+        com hoje seria desativado por engano. data_termino aqui NUNCA é uma
+        data real de encerramento para esses contratos."""
+        contrato = _contrato(data_termino=date(2026, 7, 15), prazo_indeterminado=True)
+        finalizar = RegistroChamadas(retorno=True)
+
+        resultado = processar_finalizacao_contrato(
+            contrato, date(2026, 7, 15), finalizar_contrato_fn=finalizar
+        )
+
+        assert resultado is None
+        assert not finalizar.chamadas
 
 
 class TestProcessarCalculoReajuste:

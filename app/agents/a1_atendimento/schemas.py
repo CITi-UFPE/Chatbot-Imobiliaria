@@ -81,6 +81,14 @@ class DadosInquilino(BaseModel):
     aviso_previo_a_partir_mes: int
     imovel_identificacao: str
     imovel_endereco: str
+    # Adicionados na Migration 013 — reverte a exclusão original da
+    # Migration 006 ("dados bancários são escopo do A2"), porque o A2 nunca
+    # respondeu por texto e isso deixava "qual a chave Pix?" sem resposta em
+    # lugar nenhum do sistema. CPF/CNPJ do inquilino e do fiador continuam
+    # de fora — essa parte da decisão original não mudou.
+    banco_agencia: Optional[str] = None
+    banco_conta: Optional[str] = None
+    pix_chave: Optional[str] = None
     clausulas: list[ClausulaContrato] = Field(default_factory=list)
 
 
