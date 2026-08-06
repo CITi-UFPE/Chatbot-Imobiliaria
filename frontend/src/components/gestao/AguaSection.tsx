@@ -18,6 +18,16 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 
@@ -88,6 +98,11 @@ interface ExtracaoContaAguaResult {
   periodoInicio: string; // YYYY-MM-DD
   periodoFim: string; // YYYY-MM-DD
   valorTotal: number;
+  // "YYYY-MM" quando o documento traz o mês de referência escrito
+  // explicitamente (ex: "Referência: Julho/2025"); null quando a IA
+  // não encontrou esse texto no documento — nesse caso o front cai
+  // no fallback de mesComMaisDiasNoPeriodo.
+  mesReferencia: string | null;
   candidatos: CandidatoContrato[];
 }
 
@@ -136,7 +151,9 @@ async function extrairEIdentificarContrato(
 
 // Limiares para classificar o cenário de correspondência — ver a
 // "Regra de decisão" do fluxo híbrido. Ajustável conforme a
-// qualidade real das pontuações devolvidas pela IA.
+// qualidade real das pontuações devolvidas pela IA. A pontuação em si
+// nunca é mostrada ao usuário (ver CandidatoCard) — só orienta qual
+// cenário de conferência é exibido.
 const CONFIANCA_MINIMA = 0.7;
 const DIFERENCA_MINIMA_DESEMPATE = 0.2;
 
@@ -157,14 +174,82 @@ function classificarCenario(candidatos: CandidatoValido[]): CenarioMatch {
   return "ambiguidade";
 }
 
-function primeiroDiaDoMes(dataISO: string): string {
-  const [ano, mes] = dataISO.split("-");
-  return `${ano}-${mes}-01`;
+// Fallback para quando a conta não traz o mês de referência escrito
+// no documento: escolhe o mês (YYYY-MM) que concentra mais dias
+// dentro do período informado (periodoInicio..periodoFim).
+function mesComMaisDiasNoPeriodo(periodoInicioISO: string, periodoFimISO: string): string {
+  const inicio = new Date(`${periodoInicioISO}T00:00:00Z`);
+  const fim = new Date(`${periodoFimISO}T00:00:00Z`);
+  const diasPorMes = new Map<string, number>();
+
+  const cursor = new Date(inicio);
+  while (cursor <= fim) {
+    const chave = `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, "0")}`;
+    diasPorMes.set(chave, (diasPorMes.get(chave) ?? 0) + 1);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  let mesEscolhido = "";
+  let maiorContagem = -1;
+  for (const [mes, dias] of diasPorMes) {
+    if (dias > maiorContagem) {
+      maiorContagem = dias;
+      mesEscolhido = mes;
+    }
+  }
+  return mesEscolhido; // "YYYY-MM"
 }
 
 function dataVencimentoDoMes(diaVencimento: number, mesReferenciaISO: string): string {
   const [ano, mes] = mesReferenciaISO.split("-");
   return `${ano}-${mes}-${String(diaVencimento).padStart(2, "0")}`;
+}
+
+// Avança um mês de referência no formato "YYYY-MM".
+function proximoMes(mesISO: string): string {
+  const [ano, mes] = mesISO.split("-").map(Number);
+  const mesesDesdeAno0 = ano * 12 + (mes - 1) + 1;
+  const novoAno = Math.floor(mesesDesdeAno0 / 12);
+  const novoMes = (mesesDesdeAno0 % 12) + 1;
+  return `${novoAno}-${String(novoMes).padStart(2, "0")}`;
+}
+
+// Se a medição da conta termina DEPOIS do dia de vencimento do contrato
+// dentro do mês de referência detectado, a cobrança não está "nascendo
+// vencida" — ela pertence ao ciclo de cobrança do mês seguinte. Nesse
+// caso empurramos o mês de referência (e recalculamos o vencimento nele).
+// Ex.: período 16/06–17/07, mês de referência "julho", vencimento do
+// contrato dia 15 → vencimento em julho seria 15/07, mas a medição só
+// fecha em 17/07 (depois do vencimento) → mês de referência vira agosto,
+// vencimento recalculado para 15/08.
+function resolverMesReferenciaEVencimento(
+  mesReferenciaISO: string, // "YYYY-MM"
+  periodoFimISO: string, // "YYYY-MM-DD"
+  diaVencimento: number,
+): { mesReferencia: string; dataVencimento: string } {
+  let mesReferencia = mesReferenciaISO;
+  let dataVencimento = dataVencimentoDoMes(diaVencimento, `${mesReferencia}-01`);
+
+  if (periodoFimISO > dataVencimento) {
+    mesReferencia = proximoMes(mesReferencia);
+    dataVencimento = dataVencimentoDoMes(diaVencimento, `${mesReferencia}-01`);
+  }
+
+  return { mesReferencia, dataVencimento };
+}
+
+function formatarDataBR(dataISO: string | undefined): string {
+  if (!dataISO) return "";
+  const [ano, mes, dia] = dataISO.split("-");
+  return `${dia}/${mes}/${ano}`;
+}
+
+function diferencaEmDias(dataInicioISO: string, dataFimISO: string): number {
+  // Meio-dia UTC fixo pras duas pontas, pra não sofrer com fuso horário nem
+  // com horário de verão na subtração.
+  const inicio = new Date(`${dataInicioISO}T00:00:00Z`);
+  const fim = new Date(`${dataFimISO}T00:00:00Z`);
+  return Math.round((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
 }
 
 interface CamposExtraidos {
@@ -174,6 +259,7 @@ interface CamposExtraidos {
   periodoInicio: string;
   periodoFim: string;
   valorTotal: number;
+  mesReferencia: string; // "YYYY-MM" — editável, confirmado pelo usuário na conferência
 }
 
 export function ComprovanteAguaUpload() {
@@ -191,12 +277,18 @@ export function ComprovanteAguaUpload() {
     periodoInicio: "",
     periodoFim: "",
     valorTotal: 0,
+    mesReferencia: "",
   });
   const [candidatos, setCandidatos] = useState<CandidatoValido[]>([]);
   const [cenario, setCenario] = useState<CenarioMatch>("lista_completa");
   const [buscaManual, setBuscaManual] = useState("");
   const [modoBuscaManual, setModoBuscaManual] = useState(false);
   const [contratoSelecionadoId, setContratoSelecionadoId] = useState<string | null>(null);
+  // Preenchido só quando a data de vencimento calculada já passou — controla
+  // o AlertDialog de confirmação antes de gravar a cobrança como atrasada.
+  const [contaVencidaPendente, setContaVencidaPendente] = useState<{ dataVencimento: string } | null>(
+    null,
+  );
 
   const { data: contratosAtivos = [] } = useQuery({
     queryKey: CONTRATOS_ATIVOS_QUERY_KEY,
@@ -217,12 +309,14 @@ export function ComprovanteAguaUpload() {
       periodoInicio: "",
       periodoFim: "",
       valorTotal: 0,
+      mesReferencia: "",
     });
     setCandidatos([]);
     setCenario("lista_completa");
     setBuscaManual("");
     setModoBuscaManual(false);
     setContratoSelecionadoId(null);
+    setContaVencidaPendente(null);
   };
 
   const handleFile = (f: File | null) => {
@@ -261,6 +355,14 @@ export function ComprovanteAguaUpload() {
       const cenarioDetectado = classificarCenario(candidatosValidos);
       const ordenados = [...candidatosValidos].sort((a, b) => b.confianca - a.confianca);
 
+      // Mês de referência: prioriza o que a IA leu explicitamente no
+      // documento; se não achou, cai no fallback (mês com mais dias
+      // dentro do período informado). Fica editável na tela de
+      // conferência de qualquer forma.
+      const mesReferenciaDetectado =
+        resultado.mesReferencia ??
+        mesComMaisDiasNoPeriodo(resultado.periodoInicio, resultado.periodoFim);
+
       setCampos({
         condominio: resultado.condominio,
         apartamento: resultado.apartamento,
@@ -268,6 +370,7 @@ export function ComprovanteAguaUpload() {
         periodoInicio: resultado.periodoInicio,
         periodoFim: resultado.periodoFim,
         valorTotal: resultado.valorTotal,
+        mesReferencia: mesReferenciaDetectado,
       });
       setCandidatos(candidatosValidos);
       setCenario(cenarioDetectado);
@@ -286,26 +389,45 @@ export function ComprovanteAguaUpload() {
   };
 
   const confirmarMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (opts: { statusForcado?: "atrasado" } = {}) => {
       if (!contratoSelecionado) throw new Error("Selecione o contrato correspondente");
       if (!campos.valorTotal || campos.valorTotal <= 0) throw new Error("Informe um valor válido");
-      if (!campos.periodoInicio) throw new Error("Informe o período de referência");
+      if (!campos.mesReferencia) throw new Error("Informe o mês de referência");
+      if (!campos.periodoFim) throw new Error("Informe o fim do período de leitura");
 
-      const mesReferencia = primeiroDiaDoMes(campos.periodoInicio);
-      const dataVencimento = dataVencimentoDoMes(contratoSelecionado.dia_vencimento, mesReferencia);
+      const { mesReferencia: mesReferenciaAjustado, dataVencimento } = resolverMesReferenciaEVencimento(
+        campos.mesReferencia,
+        campos.periodoFim,
+        contratoSelecionado.dia_vencimento,
+      );
+      const mesReferencia = `${mesReferenciaAjustado}-01`;
+
+      // Quando o usuário confirma o lançamento de uma conta já vencida (ver
+      // handleConfirmarClick), calculamos os dias de atraso na hora — reflete
+      // o atraso já existente no momento do lançamento, não é recalculado depois.
+      const diasAtraso =
+        opts.statusForcado === "atrasado"
+          ? Math.max(0, diferencaEmDias(dataVencimento, new Date().toISOString().slice(0, 10)))
+          : 0;
 
       // Grava apenas a cobrança esperada do mês, com base na leitura da
       // conta de água. valor_identificado, comprovante_url e
       // data_identificada_comprovante ficam nulos de propósito: só são
       // preenchidos depois, quando o inquilino enviar o comprovante de
       // pagamento (fluxo separado). data_pagamento e mensagem_estagio
-      // também ficam nulos, e status assume o default 'pendente' da tabela.
+      // também ficam nulos. status assume o default 'pendente' da tabela,
+      // a não ser que o usuário tenha confirmado o lançamento de uma conta
+      // já vencida (ver handleConfirmarClick) — nesse caso grava 'atrasado'
+      // e os dias_atraso já calculados.
       const { error: insertError } = await supabase.from("charges").insert({
         contract_id: contratoSelecionado.id,
         tipo: "agua",
         mes_referencia: mesReferencia,
         valor_esperado: campos.valorTotal,
         data_vencimento: dataVencimento,
+        ...(opts.statusForcado
+          ? { status: opts.statusForcado, dias_atraso: diasAtraso }
+          : {}),
       });
 
       if (insertError) {
@@ -326,6 +448,32 @@ export function ComprovanteAguaUpload() {
     },
   });
 
+  // Verificação de conta vencida: primeiro resolve o mês de referência real
+  // (empurrando pro mês seguinte se a leitura terminar depois do vencimento
+  // do mês detectado — ver resolverMesReferenciaEVencimento), e só então
+  // compara com hoje. Se ainda assim já passou, abre o AlertDialog e espera
+  // a decisão do usuário em vez de gravar de imediato.
+  const handleConfirmarClick = () => {
+    if (!contratoSelecionado || !campos.mesReferencia || !campos.periodoFim) {
+      confirmarMutation.mutate({});
+      return;
+    }
+
+    const { dataVencimento } = resolverMesReferenciaEVencimento(
+      campos.mesReferencia,
+      campos.periodoFim,
+      contratoSelecionado.dia_vencimento,
+    );
+    const hojeISO = new Date().toISOString().slice(0, 10);
+
+    if (dataVencimento < hojeISO) {
+      setContaVencidaPendente({ dataVencimento });
+      return;
+    }
+
+    confirmarMutation.mutate({});
+  };
+
   const contratosFiltrados = contratosAtivos.filter((c) => {
     const termo = buscaManual.trim().toLowerCase();
     if (!termo) return true;
@@ -338,6 +486,7 @@ export function ComprovanteAguaUpload() {
   const candidatosOrdenados = [...candidatos].sort((a, b) => b.confianca - a.confianca);
 
   return (
+    <>
     <Card>
       <CardHeader>
         <CardTitle className="text-lg flex items-center gap-2">
@@ -457,6 +606,13 @@ export function ComprovanteAguaUpload() {
                     onChange={(e) => setCampos((p) => ({ ...p, periodoFim: e.target.value }))}
                   />
                 </FieldAgua>
+                <FieldAgua label="Mês de referência">
+                  <Input
+                    type="month"
+                    value={campos.mesReferencia}
+                    onChange={(e) => setCampos((p) => ({ ...p, mesReferencia: e.target.value }))}
+                  />
+                </FieldAgua>
               </div>
 
               <div className="space-y-3">
@@ -546,7 +702,7 @@ export function ComprovanteAguaUpload() {
                   Cancelar
                 </Button>
                 <Button
-                  onClick={() => confirmarMutation.mutate()}
+                  onClick={handleConfirmarClick}
                   disabled={!contratoSelecionadoId || confirmarMutation.isPending}
                 >
                   {confirmarMutation.isPending ? (
@@ -563,6 +719,42 @@ export function ComprovanteAguaUpload() {
         )}
       </CardContent>
     </Card>
+
+    <AlertDialog
+      open={!!contaVencidaPendente}
+      onOpenChange={(open) => {
+        if (!open) setContaVencidaPendente(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Conta já vencida</AlertDialogTitle>
+          <AlertDialogDescription>
+            A data de vencimento desta cobrança ({formatarDataBR(contaVencidaPendente?.dataVencimento)}
+            ) já passou. Tem certeza que deseja lançar essa conta mesmo assim?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            onClick={() => {
+              setContaVencidaPendente(null);
+              resetar();
+            }}
+          >
+            Não, cancelar
+          </AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              setContaVencidaPendente(null);
+              confirmarMutation.mutate({ statusForcado: "atrasado" });
+            }}
+          >
+            Sim, lançar mesmo assim
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }
 
@@ -575,6 +767,9 @@ function CandidatoCard({
   selecionado: boolean;
   onSelecionar: () => void;
 }) {
+  // A pontuação de confiança nunca é exibida ao usuário — ela só orienta,
+  // por trás dos panos, qual cenário de conferência aparece na tela
+  // (ver classificarCenario). Aqui, o badge é sempre qualitativo.
   return (
     <button
       type="button"
@@ -587,7 +782,7 @@ function CandidatoCard({
       <div className="flex items-center justify-between gap-2 mb-1">
         <span className="font-medium">{candidato.imovel_identificacao}</span>
         <Badge variant={candidato.confianca >= CONFIANCA_MINIMA ? "default" : "secondary"}>
-          {Math.round(candidato.confianca * 100)}% de confiança
+          Sugestão da IA
         </Badge>
       </div>
       <div className="text-xs text-muted-foreground mb-2">{candidato.imovel_endereco}</div>
