@@ -52,6 +52,19 @@ class ExtracaoContaAguaResult(BaseModel):
         alias="periodoFim", description="Fim do período de consumo, formato YYYY-MM-DD"
     )
     valor_total: Decimal = Field(alias="valorTotal", description="Valor total a pagar")
+    mes_referencia: str | None = Field(
+        default=None,
+        alias="mesReferencia",
+        description=(
+            "Mês de referência da conta, formato YYYY-MM. Preencher SOMENTE se "
+            "o documento trouxer esse mês escrito explicitamente (ex: "
+            "'Referência: Julho/2025', 'Competência 07/2025'). Não deduzir a "
+            "partir de periodo_inicio/periodo_fim nem de datas de emissão ou "
+            "vencimento — deixar null se não houver texto explícito no "
+            "documento. Quando null, o frontend aplica um cálculo de fallback "
+            "(mês com mais dias dentro do período de consumo)."
+        ),
+    )
     candidatos: list[CandidatoContratoAgua] = Field(
         default_factory=list,
         description=(

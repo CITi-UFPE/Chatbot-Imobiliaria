@@ -28,7 +28,14 @@ SYSTEM_PROMPT = (
     "sobre isso em vez de exigir correspondência exata de texto. Nunca invente "
     "um contract_id que não esteja na lista de contratos recebida. Se nenhum "
     "contrato corresponder com confiança razoável, devolva a lista de "
-    "candidatos vazia em vez de forçar uma correspondência."
+    "candidatos vazia em vez de forçar uma correspondência. "
+    "Para mes_referencia: preencha esse campo SOMENTE se o documento trouxer "
+    "o mês de referência escrito explicitamente (ex: 'Referência: Julho/2025', "
+    "'Competência 07/2025', 'Mês de consumo: Julho'), no formato 'YYYY-MM'. "
+    "Não deduza o mês a partir do período de leitura (periodo_inicio/"
+    "periodo_fim) nem da data de emissão/vencimento — se não houver texto "
+    "explícito indicando o mês de referência, deixe null; a decisão de qual "
+    "mês usar nesse caso é feita por outra etapa do sistema."
 )
 
 TOOL_NAME = "registrar_leitura_conta_agua"

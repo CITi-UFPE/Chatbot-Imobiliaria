@@ -32,6 +32,25 @@ const TIPO_TO_RESOLUCAO: Record<Exclude<Tipo, "">, TipoResolucaoNegociacao> = {
   negado: "negado",
 };
 
+// Evita o bug de fuso horário do JS: new Date("2025-06-01") é interpretado
+// como UTC e, ao formatar no fuso local (Brasil, UTC-3), pode "voltar" um
+// dia — junho vira maio. Construindo a partir de ano/mês/dia numéricos,
+// o Date já nasce no fuso local e a formatação fica correta.
+function formatarMesReferencia(mesReferenciaISO: string): string {
+  const [ano, mes] = mesReferenciaISO.split("-").map(Number);
+  return new Date(ano, mes - 1, 1).toLocaleDateString("pt-BR", {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+// Mesmo problema de fuso horário do formatarMesReferencia acima, aplicado
+// a datas completas (dia/mês/ano) em vez de só mês/ano.
+function formatarDataVencimento(dataISO: string): string {
+  const [ano, mes, dia] = dataISO.split("-").map(Number);
+  return new Date(ano, mes - 1, dia).toLocaleDateString("pt-BR");
+}
+
 // Linha vinda de charges + o contrato relacionado (join), já achatada pra UI.
 interface Negociacao {
   chargeId: string;
@@ -76,10 +95,7 @@ async function fetchNegociacoes(): Promise<Negociacao[]> {
     inquilino: row.contracts?.inquilino_nome ?? "—",
     imovel: row.contracts?.imovel_endereco ?? "—",
     telefone: row.contracts?.telefone_whatsapp ?? null,
-    mes: new Date(row.mes_referencia).toLocaleDateString("pt-BR", {
-      month: "long",
-      year: "numeric",
-    }),
+    mes: formatarMesReferencia(row.mes_referencia),
     valor: Number(row.valor_esperado),
   }));
 }
@@ -117,10 +133,7 @@ async function fetchPendentes(): Promise<Pendente[]> {
     inquilino: row.contracts?.inquilino_nome ?? "—",
     imovel: row.contracts?.imovel_endereco ?? "—",
     telefone: row.contracts?.telefone_whatsapp ?? null,
-    mes: new Date(row.mes_referencia).toLocaleDateString("pt-BR", {
-      month: "long",
-      year: "numeric",
-    }),
+    mes: formatarMesReferencia(row.mes_referencia),
     dataVencimento: row.data_vencimento,
     valorEsperado: Number(row.valor_esperado),
   }));
@@ -162,10 +175,7 @@ async function fetchAtrasadas(): Promise<Atraso[]> {
       inquilino: row.contracts?.inquilino_nome ?? "—",
       imovel: row.contracts?.imovel_endereco ?? "—",
       telefone: row.contracts?.telefone_whatsapp ?? null,
-      mes: new Date(row.mes_referencia).toLocaleDateString("pt-BR", {
-        month: "long",
-        year: "numeric",
-      }),
+      mes: formatarMesReferencia(row.mes_referencia),
       diasAtraso,
       valorInicial: valorEsperado,
       valorFinal: calcularValorFinal(
@@ -223,7 +233,9 @@ function AtrasoCard({
             <p className="text-sm text-muted-foreground mt-1">{n.imovel}</p>
           </div>
         </div>
-        <Badge variant="outline">{n.diasAtraso} dias em atraso</Badge>
+        <Badge className="border-red-200 bg-red-50 text-red-700 hover:bg-red-50 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+          {n.diasAtraso} dias em atraso
+        </Badge>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
@@ -309,7 +321,7 @@ function PendenteCard({
           </div>
         </div>
         <Badge variant="outline">
-          Vence {new Date(n.dataVencimento).toLocaleDateString("pt-BR")}
+          Vence {formatarDataVencimento(n.dataVencimento)}
         </Badge>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -327,7 +339,7 @@ function PendenteCard({
           <div>
             <div className="text-xs uppercase text-muted-foreground">Vencimento</div>
             <div className="font-medium">
-              {new Date(n.dataVencimento).toLocaleDateString("pt-BR")}
+              {formatarDataVencimento(n.dataVencimento)}
             </div>
           </div>
           <div>
