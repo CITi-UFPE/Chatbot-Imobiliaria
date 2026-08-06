@@ -51,6 +51,19 @@ function formatarDataVencimento(dataISO: string): string {
   return new Date(ano, mes - 1, dia).toLocaleDateString("pt-BR");
 }
 
+// Formata um valor monetário em Reais, sempre com exatamente 2 casas
+// decimais. Sem maximumFractionDigits, toLocaleString usa como teto o
+// maior valor entre minimumFractionDigits e 3 — resíduo de ponto
+// flutuante em contas com multa/juros (ex: 26.008 em vez de 26.01)
+// aparecia na tela como "R$ 26,008". Centralizado aqui pra não repetir
+// as duas opções em cada toLocaleString do arquivo.
+function formatarValorBRL(valor: number): string {
+  return valor.toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 // Linha vinda de charges + o contrato relacionado (join), já achatada pra UI.
 interface Negociacao {
   chargeId: string;
@@ -143,6 +156,14 @@ async function fetchPendentes(): Promise<Pendente[]> {
 // fração (0.02 = 2%), não percentual inteiro. Juros prorateado num mês de
 // 30 dias. Ver nota de unidade ainda pendente na Migration 011/003 — se a
 // convenção mudar de um lado, precisa mudar dos dois.
+//
+// O resultado é arredondado para centavos (2 casas decimais, arredondamento
+// padrão) antes de retornar. Sem isso, a soma de
+// frações (multa + juros prorateados por dia) produz resíduo de ponto
+// flutuante (ex: 26.008000000000003) que aparecia quebrado na tela.
+// Arredondar sempre pra cima cobraria sistematicamente um pouco a mais do
+// inquilino a cada atraso — arredondamento padrão é a prática usual em
+// cobranças financeiras e não favorece nenhum dos lados.
 function calcularValorFinal(
   valorEsperado: number,
   diasAtraso: number,
@@ -152,7 +173,8 @@ function calcularValorFinal(
   const percentualMulta = multaPercentual ?? 0;
   const valorMulta = valorEsperado * percentualMulta;
   const valorJuros = valorEsperado * jurosMensal * (diasAtraso / 30);
-  return valorEsperado + valorMulta + valorJuros;
+  const valorBruto = valorEsperado + valorMulta + valorJuros;
+  return Math.round(valorBruto * 100) / 100;
 }
 
 async function fetchAtrasadas(): Promise<Atraso[]> {
@@ -245,15 +267,11 @@ function AtrasoCard({
           </div>
           <div>
             <div className="text-xs uppercase text-muted-foreground">Valor Original</div>
-            <div className="font-medium tnum">
-              R$ {n.valorInicial.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-            </div>
+            <div className="font-medium tnum">R$ {formatarValorBRL(n.valorInicial)}</div>
           </div>
           <div>
             <div className="text-xs uppercase text-muted-foreground">Valor Atualizado (hoje)</div>
-            <div className="font-semibold text-lg tnum">
-              R$ {n.valorFinal.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-            </div>
+            <div className="font-semibold text-lg tnum">R$ {formatarValorBRL(n.valorFinal)}</div>
           </div>
           <div>
             <div className="text-xs uppercase text-muted-foreground">Telefone</div>
@@ -332,9 +350,7 @@ function PendenteCard({
           </div>
           <div>
             <div className="text-xs uppercase text-muted-foreground">Valor Esperado</div>
-            <div className="font-semibold text-lg tnum">
-              R$ {n.valorEsperado.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-            </div>
+            <div className="font-semibold text-lg tnum">R$ {formatarValorBRL(n.valorEsperado)}</div>
           </div>
           <div>
             <div className="text-xs uppercase text-muted-foreground">Vencimento</div>
@@ -723,9 +739,7 @@ export function CobrancasSection() {
                     </div>
                     <div>
                       <div className="text-xs uppercase text-muted-foreground">Valor Original</div>
-                      <div className="font-semibold text-lg tnum">
-                        R$ {n.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-                      </div>
+                      <div className="font-semibold text-lg tnum">R$ {formatarValorBRL(n.valor)}</div>
                     </div>
                     <div>
                       <div className="text-xs uppercase text-muted-foreground">Telefone</div>
@@ -810,7 +824,7 @@ export function CobrancasSection() {
             tone="b"
             icon={<Wallet className="h-5 w-5" />}
             label="Valor Total"
-            value={`R$ ${pendentes.reduce((acc, n) => acc + n.valorEsperado, 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
+            value={`R$ ${formatarValorBRL(pendentes.reduce((acc, n) => acc + n.valorEsperado, 0))}`}
             sublabel="Somado das cobranças em dia"
           />
         </div>
@@ -871,7 +885,7 @@ export function CobrancasSection() {
             tone="b"
             icon={<Wallet className="h-5 w-5" />}
             label="Valor Total"
-            value={`R$ ${atrasadasLeves.reduce((acc, n) => acc + n.valorFinal, 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
+            value={`R$ ${formatarValorBRL(atrasadasLeves.reduce((acc, n) => acc + n.valorFinal, 0))}`}
             sublabel="Somado das cobranças em atraso leve"
           />
         </div>
@@ -932,7 +946,7 @@ export function CobrancasSection() {
             tone="b"
             icon={<Wallet className="h-5 w-5" />}
             label="Valor Total"
-            value={`R$ ${atrasadasCriticas.reduce((acc, n) => acc + n.valorFinal, 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`}
+            value={`R$ ${formatarValorBRL(atrasadasCriticas.reduce((acc, n) => acc + n.valorFinal, 0))}`}
             sublabel="Somado das cobranças em atraso crítico"
           />
         </div>
