@@ -4,6 +4,7 @@ from pathlib import Path
 
 import anthropic
 from dotenv import load_dotenv
+from pydantic import ValidationError
 
 from app.models.charge import ContratoParaMatch, ExtracaoContaAguaResult
 from app.tools.anthropic_helpers import extrair_bloco_tool_use
@@ -122,4 +123,20 @@ def extrair_e_identificar_conta_agua(
     if tool_use is None:
         raise RuntimeError(f"Claude não retornou dados estruturados para {caminho_pdf}")
 
-    return ExtracaoContaAguaResult.model_validate(_extrair_payload(tool_use.input))
+    try:
+        return ExtracaoContaAguaResult.model_validate(_extrair_payload(tool_use.input))
+    except ValidationError as e:
+        # Acontece quando o documento não é uma conta de água de verdade (ex:
+        # usuário sobe o PDF errado por engano) — a tool é forçada
+        # (tool_choice explícito), então mesmo sem conseguir extrair nada
+        # coerente, a Claude ainda tenta preencher os campos obrigatórios do
+        # schema e às vezes devolve um placeholder tipo "<UNKNOWN>" em vez de
+        # um valor real, que não bate com o tipo esperado (ex: Decimal). Sem
+        # este catch, isso sobe como ValidationError pro chamador — o router
+        # (app/api/routers/charges.py) só sabe traduzir RuntimeError em erro
+        # HTTP 422 "educado", então um ValidationError cru vira 500.
+        raise RuntimeError(
+            f"Claude devolveu dados que não correspondem ao formato esperado de uma conta "
+            f"de água para {caminho_pdf} — provavelmente o documento não é uma conta de "
+            f"água: {e}"
+        ) from e
