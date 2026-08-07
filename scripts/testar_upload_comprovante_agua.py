@@ -369,19 +369,50 @@ def cenario_agua_matching(item: dict) -> None:
 
 
 def cenario_agua_documento_errado() -> None:
-    _titulo("ÁGUA — PDF errado (comprovante de pagamento mandado como se fosse conta de água)")
+    _titulo("ÁGUA — endpoint HTTP devolve 422 (não 500) quando a Claude devolve dado inválido pro schema")
+    import json
+    from unittest.mock import MagicMock, patch
+
+    from fastapi.testclient import TestClient
+
+    from app.api.main import app
+
+    # Reproduz de forma determinística a falha original do bug (Claude
+    # devolvendo o placeholder "<UNKNOWN>" num campo Decimal) — sem mockar,
+    # essa falha só aparece às vezes: o modelo não é determinístico, na
+    # maioria das vezes devolve um placeholder que PASSA na validação (ex:
+    # "DESCONHECIDO", "1970-01-01"). Mockar é o único jeito de testar o
+    # comportamento do ENDPOINT (RuntimeError -> HTTP 422, não 500) sem
+    # depender de sorte a cada execução do script.
+    fake_tool_use = MagicMock()
+    fake_tool_use.type = "tool_use"
+    fake_tool_use.input = {
+        "condominio": "DESCONHECIDO", "apartamento": "DESCONHECIDO",
+        "periodoInicio": "1970-01-01", "periodoFim": "1970-01-01",
+        "valorTotal": "<UNKNOWN>", "candidatos": [],
+    }
+    fake_response = MagicMock()
+    fake_response.stop_reason = "tool_use"
+    fake_response.content = [fake_tool_use]
+
     arquivo_errado = BASE / "Comprovante-76FB799A-ED29-40B3-AA6A-1ECDB9576F6F.pdf"
-    try:
-        extraido = extrair_e_identificar_conta_agua(str(arquivo_errado), CONTRATOS_AGUA_REAIS)
-        # Não deve inventar candidato nenhum pra um documento que não é
-        # conta de água — melhor resultado aceitável é candidatos vazios
-        # (ou baixa confiança); pior resultado seria "confiante e errado".
-        melhor = extraido.candidatos[0] if extraido.candidatos else None
-        ok = melhor is None or melhor.confianca < 0.7
-        detalhe = f"não levantou RuntimeError; candidatos={[(c.contract_id, c.confianca) for c in extraido.candidatos]}"
-        _registrar("agua_documento_errado", ok, detalhe)
-    except RuntimeError as e:
-        _registrar("agua_documento_errado", True, f"rejeitado com RuntimeError (aceitável): {e}")
+    contratos_json = json.dumps([c.model_dump() for c in CONTRATOS_AGUA_REAIS])
+
+    with patch("anthropic.Anthropic") as MockAnthropic:
+        MockAnthropic.return_value.messages.create.return_value = fake_response
+        with TestClient(app) as client:
+            with open(arquivo_errado, "rb") as f:
+                resp = client.post(
+                    "/charges/agua/extrair",
+                    files={"arquivo": ("documento-errado.pdf", f, "application/pdf")},
+                    data={"contratos": contratos_json},
+                )
+
+    _registrar(
+        "agua_documento_errado_endpoint_422",
+        resp.status_code == 422,
+        f"status_code={resp.status_code} (esperado 422) body={resp.text[:200]}",
+    )
 
 
 def cenario_agua_upload_content_type_errado() -> None:
@@ -427,6 +458,8 @@ def main() -> None:
     for r in RESULTADOS:
         print(f"{'OK' if r['ok'] else 'FALHOU':7s} {r['cenario']:35s} {r['detalhe']}")
     print(f"\n{passou}/{total} cenários passaram.")
+    if passou != total:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
