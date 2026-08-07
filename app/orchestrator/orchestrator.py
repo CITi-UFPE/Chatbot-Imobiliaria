@@ -1,6 +1,15 @@
 """Orquestrador — roteamento de intenção entre os agentes A1-A5.
 
-Duas etapas:
+Antes de tudo: se já existe uma conversa multi-turno em aberto pra este
+contrato (hoje, só o A3 — ver _agente_com_conversa_ativa abaixo e
+docs/schemas/015_agente_com_conversa_ativa.sql), a mensagem vai direto pro
+agente dono dela, SEM passar por classificar_intencao. Motivo: o
+classificador não tem visibilidade do estado da conversa (só a mensagem
+atual), então uma resposta ambígua no meio do fluxo do A3 ("hein? que
+endereço?") podia ser desviada pra outro agente e quebrar a máquina de
+estados no meio do caminho.
+
+Fora esse caso, duas etapas:
   1. classificar_intencao (app/orchestrator/classificador.py) decide qual
      agente deve tratar a mensagem — classificação rasa e rápida, um
      system prompt curto devolvendo {agente, motivo, urgencia}.
@@ -53,6 +62,7 @@ from app.agents.a2_cobranca.button_ids import (
 )
 from app.agents.a3_manutencao import responder_manutencao
 from app.agents.a5_escalonamento import avaliar_escalonamento, executar_escalonamento
+from app.orchestrator.agent_auth import obter_client_agente
 from app.orchestrator.classificador import classificar_intencao
 
 logger = logging.getLogger(__name__)
@@ -93,6 +103,10 @@ def rotear_mensagem(
     valores aceitos por conversation_logs.agente_responsavel ('A1'..'A5')
     ou None se nem a classificação funcionou.
     """
+    agente_ativo = _agente_com_conversa_ativa(contract_id)
+    if agente_ativo == "A3":
+        return _rotear_para_a3(contract_id, texto, historico_conversa)
+
     try:
         classificacao = classificar_intencao(texto, historico_conversa)
     except Exception:
@@ -129,6 +143,27 @@ def rotear_mensagem(
         contract_id,
     )
     return _RESPOSTA_FALLBACK_GENERICO, None
+
+
+def _agente_com_conversa_ativa(contract_id: str) -> Optional[str]:
+    """Se já existe uma conversa multi-turno em aberto pra este contrato (ex:
+    A3 aguardando confirmação do imóvel ou a descrição do problema — ver
+    agent_conversation_states, Migration 007), a mensagem atual pertence a
+    ELA: reclassificar do zero via LLM arrisca desviar pra outro agente no
+    meio do fluxo (uma resposta ambígua como "hein? que endereço?" não tem
+    contexto suficiente pra classificar sozinha). Hoje só o A3 é multi-turno.
+
+    Falha (RPC fora do ar, contract_id inválido etc.) cai em None — segue pro
+    caminho normal de classificação em vez de travar a mensagem."""
+    try:
+        client = obter_client_agente(contract_id)
+        return client.rpc("agent_get_active_agent", {}).execute().data
+    except Exception:
+        logger.exception(
+            "Falha ao checar conversa ativa para contrato %s — seguindo para classificação normal.",
+            contract_id,
+        )
+        return None
 
 
 def _rotear_para_a1(contract_id: str, texto: str, historico_conversa: str) -> tuple[str, Optional[str]]:
