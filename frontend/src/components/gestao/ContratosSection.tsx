@@ -8,6 +8,7 @@ import {
   CloudUpload,
   FileText,
   History,
+  Info,
   ListFilter,
   Loader2,
   Sparkles,
@@ -39,6 +40,67 @@ import type { ContractRow, GarantiaTipo, TipoLocatario } from "@/lib/database.ty
 
 const CONTRATOS_QUERY_KEY = ["contracts"] as const;
 
+// Tipo de renovação (Migration 014) — escolhido manualmente pela gestora
+// aqui no Passo 3, NÃO é inferido pela IA na extração. Decide o
+// comportamento do cron do A4 no vencimento — ver
+// app/agents/a4_gestao_contratual/fluxo.py::processar_finalizacao_contrato.
+type TipoRenovacao =
+  | "novo_contrato"
+  | "requer_aditivo"
+  | "automatica"
+  | "indeterminado_por_lei"
+  | "nao_identificado";
+
+// "Acionáveis" = tipos que ficam pendentes de decisão da gestora se
+// ninguém resolver até data_termino (card com ação em RenovacaoSection.tsx).
+// novo_contrato e indeterminado_por_lei nunca ficam pendentes — o primeiro
+// só é informativo, o segundo transiciona sozinho por força de lei.
+const TIPOS_RENOVACAO_ACIONAVEIS: readonly TipoRenovacao[] = [
+  "requer_aditivo",
+  "automatica",
+  "nao_identificado",
+];
+
+const OPCOES_TIPO_RENOVACAO: { value: TipoRenovacao; label: string; descricao: string }[] = [
+  {
+    value: "novo_contrato",
+    label: "Novo contrato",
+    descricao:
+      "Ao vencer, a continuidade é feita cadastrando um contrato novo — não um aditivo a este. Cobre também os casos em que não haverá continuidade.",
+  },
+  {
+    value: "requer_aditivo",
+    label: "Requer aditivo",
+    descricao: "Só prorroga mediante assinatura de um Termo Aditivo formal a este contrato.",
+  },
+  {
+    value: "automatica",
+    label: "Renovação automática",
+    descricao:
+      "Tem cláusula de renovação automática; o resultado (nova data de vencimento ou prazo indefinido) é confirmado no momento certo.",
+  },
+  {
+    value: "indeterminado_por_lei",
+    label: "Prazo indeterminado por lei",
+    descricao:
+      "O contrato é omisso quanto à renovação; a prorrogação decorre exclusivamente da lei, sem decisão a tomar.",
+  },
+  {
+    value: "nao_identificado",
+    label: "Nenhuma das anteriores",
+    descricao:
+      'Nenhuma opção acima descreve bem este contrato. Tratado com o mesmo rigor de "Requer aditivo".',
+  },
+];
+
+function isDataPassada(dataStr: string): boolean {
+  if (!dataStr) return false;
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const data = new Date(`${dataStr}T00:00:00`);
+  return data < hoje;
+}
+
 // Formato retornado pelo agente de extração (app/tools/contract_extraction.py,
 // modelo ExtracaoContratoResult em app/models/contract.py). Espelha o schema
 // SQL 1:1 — se o backend mudar de nome um campo, este tipo também precisa mudar.
@@ -49,6 +111,10 @@ const CONTRATOS_QUERY_KEY = ["contracts"] as const;
 // pela extração e são enviados como estão — sem tela própria ainda. Se a
 // extração falhar em algum desses, o insert abaixo vai falhar com o erro do
 // Postgres (mais seguro do que inventar um valor default).
+//
+// tipo_renovacao e prazo_indeterminado NÃO fazem parte deste tipo: a IA não
+// classifica renovação (Migration 014) — são estado próprio do wizard,
+// definido pela gestora, e só entram no payload no momento do insert.
 interface ContratoExtraido {
   imovel_identificacao: string;
   imovel_endereco: string;
@@ -370,9 +436,24 @@ function UploadWizard({
   const [clausulas, setClausulas] = useState<ClausulaExtraida[]>([]);
   const [whatsapp, setWhatsapp] = useState("");
 
+  // Tipo de renovação (Migration 014) — seletor manual, não vem da
+  // extração. "novo_contrato" é o default por ser o caso mais comum.
+  const [tipoRenovacao, setTipoRenovacao] = useState<TipoRenovacao>("novo_contrato");
+  // Resolução exigida no próprio cadastro quando o contrato já está
+  // vencido e o tipo é "acionável" (requer_aditivo/automatica/nao_identificado)
+  // — não existe opção de adiar essa decisão pra depois.
+  const [resolucaoModo, setResolucaoModo] = useState<"nova_data" | "indefinido">("nova_data");
+  const [resolucaoNovaData, setResolucaoNovaData] = useState("");
+
   const duplicado =
     !!dados &&
     existingActiveAddresses.some((a) => a.toLowerCase() === dados.imovel_endereco.toLowerCase());
+
+  const vencido = !!dados && isDataPassada(dados.data_termino);
+  const acionavel = TIPOS_RENOVACAO_ACIONAVEIS.includes(tipoRenovacao);
+  const bloqueadoPorVencimento = tipoRenovacao === "novo_contrato" && vencido;
+  const resolucaoIncompleta =
+    vencido && acionavel && resolucaoModo === "nova_data" && !resolucaoNovaData;
 
   const handleFile = (f: File | null) => {
     if (!f) return;
@@ -431,6 +512,36 @@ function UploadWizard({
       if (!dados) throw new Error("Nenhum dado extraído para salvar");
       if (!whatsapp.trim()) throw new Error("WhatsApp é obrigatório");
 
+      const dadosVencido = isDataPassada(dados.data_termino);
+
+      if (tipoRenovacao === "novo_contrato" && dadosVencido) {
+        throw new Error(
+          'Contrato do tipo "Novo contrato" não pode ser cadastrado já vencido — corrija a data ou escolha outro tipo de renovação.',
+        );
+      }
+
+      // data_termino/prazo_indeterminado finais a gravar: por padrão são os
+      // extraídos do PDF; só mudam se o contrato já está vencido e a
+      // renovação precisa ser resolvida (ou já é resolvida por lei) no
+      // próprio cadastro.
+      let dataTerminoFinal = dados.data_termino;
+      let prazoIndeterminadoFinal = false;
+
+      if (dadosVencido && tipoRenovacao === "indeterminado_por_lei") {
+        // Sem decisão a tomar: a lei já teria produzido prazo indeterminado
+        // nesse meio-tempo, então o contrato entra direto nesse estado.
+        prazoIndeterminadoFinal = true;
+      } else if (dadosVencido && TIPOS_RENOVACAO_ACIONAVEIS.includes(tipoRenovacao)) {
+        if (resolucaoModo === "indefinido") {
+          prazoIndeterminadoFinal = true;
+        } else {
+          if (!resolucaoNovaData) {
+            throw new Error("Defina a nova data de vencimento antes de salvar.");
+          }
+          dataTerminoFinal = resolucaoNovaData;
+        }
+      }
+
       // status entra sempre como pendente_confirmacao — dado extraído por IA
       // nunca vira contrato "ativo" direto, precisa de revisão humana
       // (mesmo raciocínio da migration: mais seguro nascer travado).
@@ -438,6 +549,9 @@ function UploadWizard({
         .from("contracts")
         .insert({
           ...dados,
+          data_termino: dataTerminoFinal,
+          tipo_renovacao: tipoRenovacao,
+          prazo_indeterminado: prazoIndeterminadoFinal,
           telefone_whatsapp: whatsapp,
           status: "pendente_confirmacao",
         })
@@ -476,6 +590,9 @@ function UploadWizard({
       setDados(null);
       setClausulas([]);
       setWhatsapp("");
+      setTipoRenovacao("novo_contrato");
+      setResolucaoModo("nova_data");
+      setResolucaoNovaData("");
     },
     onError: (error: Error) => {
       console.error("Erro ao salvar contrato:", error);
@@ -639,6 +756,84 @@ function UploadWizard({
               </Field>
             </div>
 
+            {/* Tipo de renovação (Migration 014) — seletor manual, decide o
+                comportamento do contrato no vencimento (ver
+                app/agents/a4_gestao_contratual/fluxo.py). */}
+            <div className="rounded-lg border p-4 space-y-4">
+              <Field label="Tipo de renovação">
+                <Select
+                  value={tipoRenovacao}
+                  onValueChange={(v) => setTipoRenovacao(v as TipoRenovacao)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {OPCOES_TIPO_RENOVACAO.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <p className="text-xs text-muted-foreground">
+                {OPCOES_TIPO_RENOVACAO.find((o) => o.value === tipoRenovacao)?.descricao}
+              </p>
+
+              {bloqueadoPorVencimento && (
+                <div className="rounded-lg bg-destructive/10 border border-destructive/30 p-3 flex gap-2 text-sm text-destructive">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <p>
+                    Este contrato está vencido (término em {dados.data_termino}). Contratos do
+                    tipo "Novo contrato" não podem ser cadastrados vencidos — corrija a data ou
+                    escolha outro tipo de renovação.
+                  </p>
+                </div>
+              )}
+
+              {vencido && acionavel && (
+                <div className="rounded-lg bg-[var(--warning-bg)] border border-[var(--warning-border)] p-3 space-y-3">
+                  <p className="text-sm text-[var(--warning-fg)] font-medium">
+                    Este contrato está vencido — defina a renovação antes de salvar.
+                  </p>
+                  <Field label="Renovação">
+                    <Select
+                      value={resolucaoModo}
+                      onValueChange={(v) => setResolucaoModo(v as typeof resolucaoModo)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="nova_data">Nova data de vencimento</SelectItem>
+                        <SelectItem value="indefinido">Prazo indefinido</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  {resolucaoModo === "nova_data" && (
+                    <Field label="Nova data de vencimento">
+                      <Input
+                        type="date"
+                        value={resolucaoNovaData}
+                        onChange={(e) => setResolucaoNovaData(e.target.value)}
+                      />
+                    </Field>
+                  )}
+                </div>
+              )}
+
+              {vencido && tipoRenovacao === "indeterminado_por_lei" && (
+                <div className="flex items-start gap-2 text-sm text-muted-foreground bg-muted/30 rounded-lg p-3">
+                  <Info className="h-4 w-4 mt-0.5 shrink-0" />
+                  <p>
+                    Este contrato está vencido e é omisso quanto à renovação — será cadastrado
+                    diretamente como prazo indeterminado, sem necessidade de decisão.
+                  </p>
+                </div>
+              )}
+            </div>
+
             {/* Campos abaixo são obrigatórios no banco (NOT NULL) mas raramente
                 precisam de correção manual — por isso ficam num bloco separado,
                 só leitura por padrão, editáveis se algo vier errado da extração. */}
@@ -696,7 +891,10 @@ function UploadWizard({
               <Button variant="outline" onClick={() => setStep(2)} disabled={submitMutation.isPending}>
                 Voltar
               </Button>
-              <Button onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending}>
+              <Button
+                onClick={() => submitMutation.mutate()}
+                disabled={submitMutation.isPending || bloqueadoPorVencimento || resolucaoIncompleta}
+              >
                 {submitMutation.isPending ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Salvando...

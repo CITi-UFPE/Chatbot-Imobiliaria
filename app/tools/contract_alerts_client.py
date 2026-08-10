@@ -103,10 +103,59 @@ def finalizar_contrato(contract_id: UUID) -> bool:
     deve assumir sucesso silencioso quando isso retorna False — ver
     app/agents/a4_gestao_contratual/fluxo.py::processar_finalizacao_contrato.
 
+    Usado no dispatcher só para tipo_renovacao='novo_contrato' (Migration
+    016) — os demais tipos passam por desativar_pendente_renovacao ou
+    transicionar_prazo_indeterminado abaixo.
+
     Escreve como agente_ia, escopado a contract_id — mesma razão de
     registrar_alerta_renovacao/aplicar_reajuste acima. Diferente delas,
     agent_finalizar_contrato não recebe nenhum parâmetro (só lê
     agent_contract_id() do token), então o corpo do rpc() vai vazio."""
     client = obter_client_agente(contract_id)
     resultado = client.rpc("agent_finalizar_contrato", {}).execute()
+    return resultado.data is not None
+
+
+def desativar_pendente_renovacao(contract_id: UUID) -> bool:
+    """True se o contrato foi desativado agora com pendência de renovação
+    marcada (status -> 'inativo', pendente_decisao_renovacao -> true).
+    False se já não estava mais 'ativo' no momento da escrita (mesma
+    semântica de sucesso silencioso não assumido de finalizar_contrato
+    acima). agent_desativar_pendente_renovacao reforça o guard (where
+    status = 'ativo') dentro da transação; ver
+    docs/schemas/016_decisao_renovacao.sql.
+
+    Usado no dispatcher para tipo_renovacao em (requer_aditivo, automatica,
+    nao_identificado) sem decisão registrada até data_termino — ver
+    app/agents/a4_gestao_contratual/fluxo.py::processar_finalizacao_contrato.
+    Diferente de finalizar_contrato, este NÃO encerra "de vez": a gestora
+    ainda pode reativar o contrato depois, resolvendo o card no dashboard
+    (RenovacaoSection.tsx) via escrita direta em contracts.
+
+    Escreve como agente_ia, escopado a contract_id — mesma razão das
+    demais funções agent_* acima."""
+    client = obter_client_agente(contract_id)
+    resultado = client.rpc("agent_desativar_pendente_renovacao", {}).execute()
+    return resultado.data is not None
+
+
+def transicionar_prazo_indeterminado(contract_id: UUID) -> bool:
+    """True se o contrato transicionou agora para prazo indeterminado
+    (prazo_indeterminado -> true, contrato permanece 'ativo'). False se já
+    estava em prazo indeterminado no momento da escrita (mesma semântica de
+    sucesso silencioso não assumido das demais funções acima).
+    agent_transicionar_prazo_indeterminado reforça o guard (where
+    status = 'ativo' and not prazo_indeterminado) dentro da transação; ver
+    docs/schemas/014_decisao_renovacao.sql.
+
+    Usado no dispatcher só para tipo_renovacao='indeterminado_por_lei' —
+    ver app/agents/a4_gestao_contratual/fluxo.py::processar_finalizacao_contrato.
+    Diferente de finalizar_contrato/desativar_pendente_renovacao, o
+    contrato aqui NUNCA sai de 'ativo': a prorrogação decorre de lei
+    (art. 46 §1º da Lei 8.245/91), não de decisão da gestora.
+
+    Escreve como agente_ia, escopado a contract_id — mesma razão das
+    demais funções agent_* acima."""
+    client = obter_client_agente(contract_id)
+    resultado = client.rpc("agent_transicionar_prazo_indeterminado", {}).execute()
     return resultado.data is not None

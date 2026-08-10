@@ -51,6 +51,36 @@ function formatarDataVencimento(dataISO: string): string {
   return new Date(ano, mes - 1, dia).toLocaleDateString("pt-BR");
 }
 
+// Mesmo raciocínio de fuso horário das duas funções acima, mas devolvendo
+// a diferença em dias (não uma string formatada). Positivo = já venceu há
+// N dias; negativo = ainda faltam N dias pra vencer. Usada em dois lugares:
+// (1) corrigir dias_atraso NA HORA quando "negado" reativa a cobrança
+// (resolverMutation), e (2) o badge de prazo do PendenteCard
+// (descreverPrazo, abaixo). A fonte de verdade continua sendo o cron
+// diário (_processar_charge), que recalcula isso oficialmente todo dia;
+// isso aqui é só pra a tela não ficar desatualizada até lá.
+function calcularDiasAtraso(dataVencimentoISO: string): number {
+  const [ano, mes, dia] = dataVencimentoISO.split("-").map(Number);
+  const vencimento = new Date(ano, mes - 1, dia);
+  const agora = new Date();
+  const hoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
+  return Math.round((hoje.getTime() - vencimento.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// Reaproveita calcularDiasAtraso (que dá negativo pra datas futuras) só
+// pra virar texto legível no badge do card de "Cobranças em Dia".
+function descreverPrazo(dataVencimentoISO: string): string {
+  const diasParaVencer = -calcularDiasAtraso(dataVencimentoISO);
+  if (diasParaVencer === 0) return "Vence hoje";
+  if (diasParaVencer === 1) return "Vence amanhã";
+  if (diasParaVencer > 1) return `Vence em ${diasParaVencer} dias`;
+  // defensivo: já passou do vencimento mas o cron ainda não rodou pra
+  // mover o status pra 'atrasado' — não deveria aparecer na prática,
+  // mas evita mostrar "vence em -2 dias" se acontecer.
+  const diasAtraso = -diasParaVencer;
+  return diasAtraso === 1 ? "Venceu ontem" : `Venceu há ${diasAtraso} dias`;
+}
+
 // Formata um valor monetário em Reais, sempre com exatamente 2 casas
 // decimais. Sem maximumFractionDigits, toLocaleString usa como teto o
 // maior valor entre minimumFractionDigits e 3 — resíduo de ponto
@@ -65,6 +95,11 @@ function formatarValorBRL(valor: number): string {
 }
 
 // Linha vinda de charges + o contrato relacionado (join), já achatada pra UI.
+//
+// dataVencimento foi adicionado especificamente pro fluxo de "negado" (ver
+// resolverMutation) — precisa saber o vencimento real da charge pra
+// recalcular dias_atraso e decidir se ela volta pra 'atrasado' ou
+// 'pendente'.
 interface Negociacao {
   chargeId: string;
   contractId: string;
@@ -73,6 +108,7 @@ interface Negociacao {
   telefone: string | null;
   mes: string; // formatado a partir de mes_referencia
   valor: number;
+  dataVencimento: string; // ISO (yyyy-mm-dd)
 }
 
 // Linha de charge em atraso (status='atrasado'), com o valor final já
@@ -95,7 +131,7 @@ async function fetchNegociacoes(): Promise<Negociacao[]> {
   const { data, error } = await supabase
     .from("charges")
     .select(
-      "id, contract_id, mes_referencia, valor_esperado, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp)",
+      "id, contract_id, mes_referencia, valor_esperado, data_vencimento, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp)",
     )
     .eq("status", "em_negociacao")
     .order("mes_referencia", { ascending: false });
@@ -110,6 +146,7 @@ async function fetchNegociacoes(): Promise<Negociacao[]> {
     telefone: row.contracts?.telefone_whatsapp ?? null,
     mes: formatarMesReferencia(row.mes_referencia),
     valor: Number(row.valor_esperado),
+    dataVencimento: row.data_vencimento,
   }));
 }
 
@@ -226,9 +263,20 @@ interface PagamentoFormState {
   valorPago: string;
 }
 
-function hojeISO(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+ function hojeISO(): string {
+
+  // Local, não UTC: toISOString() opera em UTC, então em fusos atrás de
+  // UTC (Brasil, UTC-3) o campo "Data do Pagamento" vinha pré-preenchido
+  // com o dia seguinte a partir de ~21h local. Mesmo raciocínio das
+  // funções acima (formatarDataVencimento, calcularDiasAtraso), só que no
+  // sentido inverso: aqui é Date local -> string ISO, não string ISO ->
+  // Date local.
+  const agora = new Date();
+  const ano = agora.getFullYear();
+  const mes = String(agora.getMonth() + 1).padStart(2, "0");
+  const dia = String(agora.getDate()).padStart(2, "0");
+  return `${ano}-${mes}-${dia}`;
+ }
 
 function AtrasoCard({
   n,
@@ -327,6 +375,9 @@ function PendenteCard({
   onMarcarPago: () => void;
 }) {
   const valorInvalido = form.valorPago !== "" && Number(form.valorPago) <= 0;
+  // Positivo = ainda faltam N dias pra vencer (caso normal desta seção).
+  const diasParaVencer = -calcularDiasAtraso(n.dataVencimento);
+  const prazoUrgente = diasParaVencer <= 1; // vence hoje ou amanhã
 
   return (
     <Card key={n.chargeId}>
@@ -338,8 +389,15 @@ function PendenteCard({
             <p className="text-sm text-muted-foreground mt-1">{n.imovel}</p>
           </div>
         </div>
-        <Badge variant="outline">
-          Vence {formatarDataVencimento(n.dataVencimento)}
+        <Badge
+          variant={prazoUrgente ? undefined : "outline"}
+          className={
+            prazoUrgente
+              ? "border-[var(--warning-border)] bg-[var(--warning-bg)] text-[var(--warning-fg)] hover:bg-[var(--warning-bg)]"
+              : undefined
+          }
+        >
+          {descreverPrazo(n.dataVencimento)}
         </Badge>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -511,15 +569,9 @@ export function CobrancasSection() {
         tipo_resolucao: TIPO_TO_RESOLUCAO[form.tipo as Exclude<Tipo, "">],
         valor_negociado: valorNegociado,
         decidido_por_user_id: user.id,
-        data_decisao: new Date().toISOString().slice(0, 10),
+        data_decisao: hojeISO(),
       });
       if (negotiationError) throw negotiationError;
-
-      // "negado" mantém a cobrança em aberto (volta pro estado de atrasado);
-      // perdão total/desconto parcial encerram a pendência como quitada.
-      // Julgamento de negócio — revisitar se o time quiser um status
-      // intermediário pra "desconto parcial pago vs. ainda a pagar".
-      const novoStatusCharge = form.tipo === "negado" ? "atrasado" : "quitado";
 
       // Bug conhecido (corrigido aqui): o valor da cobrança nunca era
       // atualizado após a negociação — charge_negotiations guardava o
@@ -536,17 +588,38 @@ export function CobrancasSection() {
       // total; se isso incomodar em relatórios financeiros, a saída limpa
       // é migrar a constraint pra `>= 0` (ou separar num campo
       // valor_final) e voltar a gravar 0 exato.
-      //
-      // "Negado" não muda o valor (a cobrança segue em aberto pelo valor
-      // original).
       const PERDAO_TOTAL_VALOR_RESIDUAL = 0.01;
-      const updatePayload: { status: string; valor_esperado?: number } = {
-        status: novoStatusCharge,
+      const updatePayload: { status: string; valor_esperado?: number; dias_atraso?: number } = {
+        status: "",
       };
+
       if (form.tipo === "total") {
+        updatePayload.status = "quitado";
         updatePayload.valor_esperado = PERDAO_TOTAL_VALOR_RESIDUAL;
       } else if (form.tipo === "parcial") {
+        updatePayload.status = "quitado";
         updatePayload.valor_esperado = valorNegociado as number;
+      } else {
+        // "negado" reativa a cobrança automática. Corrige dias_atraso NA
+        // HORA (não precisa esperar o cron do dia seguinte) — a tela não
+        // fica com o valor desatualizado até o próximo run.
+        //
+        // Mesma regra do cron pra decidir status (ver _processar_charge:
+        // `novo_status = "atrasado" if dias_atraso_hoje > 0 else
+        // charge.status`): pausar_charges_em_negociacao pausa tanto
+        // 'pendente' quanto 'atrasado', então uma negociação aberta
+        // preventivamente numa charge que ainda nem venceu (pedido de
+        // desconto antecipado) precisa voltar pra 'pendente', não
+        // 'atrasado' — senão a charge aparece na seção errada da tela (Em
+        // Atraso em vez de Em Dia) mesmo sem estar vencida ainda.
+        //
+        // mensagem_estagio e escalations NÃO são tocados aqui, de
+        // propósito — o cron diário (_processar_charge) já decide sozinho,
+        // no próximo run, se precisa mandar mensagem/escalonar, comparando
+        // o mensagem_estagio salvo (intocado) com o estágio real do dia.
+        const diasAtrasoAtual = calcularDiasAtraso(n.dataVencimento);
+        updatePayload.status = diasAtrasoAtual > 0 ? "atrasado" : "pendente";
+        updatePayload.dias_atraso = diasAtrasoAtual;
       }
 
       const { error: chargeError } = await supabase
@@ -555,25 +628,42 @@ export function CobrancasSection() {
         .eq("id", n.chargeId);
       if (chargeError) throw chargeError;
 
-      return { n, form };
+      return { n, form, diasAtrasoAtual: updatePayload.dias_atraso ?? null };
     },
-    onSuccess: ({ n, form }) => {
+    onSuccess: ({ n, form, diasAtrasoAtual }) => {
       const msgs: Record<Exclude<Tipo, "">, string> = {
         total: `Olá ${n.inquilino}! Sua pendência de ${n.mes} foi perdoada integralmente. 🎉`,
         parcial: `Olá ${n.inquilino}! Fechamos um acordo em R$ ${form.valorNegociado} referente a ${n.mes}.`,
-        negado: `Olá ${n.inquilino}, não foi possível conceder o desconto solicitado. Entre em contato.`,
+        negado:
+          `Olá ${n.inquilino}, não foi possível conceder o desconto solicitado. ` +
+          `A cobrança referente a ${n.mes} voltou automaticamente ao fluxo normal` +
+          (diasAtrasoAtual !== null
+            ? diasAtrasoAtual > 0
+              ? ` (${diasAtrasoAtual} dia(s) de atraso).`
+              : ` (ainda dentro do prazo, vence em ${Math.abs(diasAtrasoAtual)} dia(s)).`
+            : "."),
       };
 
       // TODO: chamar aqui a função real de envio de mensagem via WhatsApp
       // Ex: await enviarMensagemWhatsApp({ telefone: n.telefone, mensagem });
       // O toast abaixo é só uma simulação visual e deve ser mantido (ou ajustado)
       // para refletir o resultado real do envio (sucesso/erro).
-      toast.success("WhatsApp enviado ao inquilino", {
-        description: msgs[form.tipo as Exclude<Tipo, "">],
-        icon: <MessageCircle className="h-4 w-4" />,
-      });
+      toast.success(
+        form.tipo === "negado" ? "Negociação negada — cobrança reativada" : "WhatsApp enviado ao inquilino",
+        {
+          description: msgs[form.tipo as Exclude<Tipo, "">],
+          icon: <MessageCircle className="h-4 w-4" />,
+        },
+      );
 
       queryClient.invalidateQueries({ queryKey: COBRANCAS_QUERY_KEY });
+      // "negado" faz a charge reaparecer em Atraso OU em Pendentes,
+      // dependendo se já venceu ou não — sem isso essas seções ficavam
+      // com dado velho até o usuário recarregar a página manualmente.
+      if (form.tipo === "negado") {
+        queryClient.invalidateQueries({ queryKey: ATRASADAS_QUERY_KEY });
+        queryClient.invalidateQueries({ queryKey: PENDENTES_QUERY_KEY });
+      }
     },
     onError: (error: Error) => {
       console.error("Erro ao resolver negociação:", error);
