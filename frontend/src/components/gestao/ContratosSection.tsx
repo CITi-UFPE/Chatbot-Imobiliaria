@@ -226,7 +226,12 @@ export function ContratosSection() {
       <div>
         <PageHeader
           title="Contratos"
-          description="Gerencie imóveis cadastrados e faça o upload de novos contratos com extração automática por IA."
+          description={
+            <>
+              Gerencie imóveis cadastrados e faça o upload de novos contratos com extração
+              automática por <span style={{ color: "var(--brand)" }} className="font-medium">IA</span>.
+            </>
+          }
         />
 
         <div className="grid gap-4 sm:grid-cols-3 mb-6">
