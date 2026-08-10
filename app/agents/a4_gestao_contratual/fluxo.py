@@ -6,15 +6,31 @@
             aniversário do contrato
 
 Um terceiro passo, dentro do mesmo loop por contrato (não uma segunda
-leitura em lote — cron_listar_contratos_ativos já devolve data_termino para
-todo contrato ativo), finaliza todo contrato que chega em data_termino hoje
-— sem depender de nenhuma decisão da gestora (o painel de renovação é só
-aviso, sem interação), EXCETO contratos de prazo indeterminado (Migration
-013), cujo data_termino é só um valor histórico, nunca uma data real de
-encerramento. Fora esse caso, só pode acontecer na data_termino real, nunca
-antes (ver Migration 012: desativar antes da hora quebra cobrança e
-roteamento por WhatsApp, que dependem de status='ativo' até o fim do
-contrato).
+leitura em lote — cron_listar_contratos_ativos já devolve data_termino e
+tipo_renovacao para todo contrato ativo), decide o que fazer com o contrato
+que chega em data_termino hoje — e esse "o quê" depende de
+contrato.tipo_renovacao (Migration 016, escolhido manualmente pela gestora
+na tela de conferência, não mais inferido pela IA):
+
+  - novo_contrato (default): desativa normalmente (agent_finalizar_contrato,
+    Migration 012) — sem pendência, sem depender de decisão da gestora.
+  - requer_aditivo / automatica / nao_identificado ("acionáveis"): se não
+    houver decisão registrada até data_termino, desativa E marca
+    pendente_decisao_renovacao=true (agent_desativar_pendente_renovacao) —
+    o card de renovação continua visível no dashboard (RenovacaoSection.tsx)
+    até a gestora resolver, reativando o contrato ou confirmando o
+    encerramento.
+  - indeterminado_por_lei: nunca desativa por esta via — transiciona pra
+    prazo_indeterminado=true (agent_transicionar_prazo_indeterminado), pois
+    a prorrogação decorre de lei (art. 46 §1º da Lei 8.245/91), não de
+    decisão humana.
+
+Contratos que JÁ estão em prazo_indeterminado=true (Migration 013) nunca
+passam por nenhum desses três caminhos — data_termino, pra eles, é só um
+valor histórico, nunca uma data real de encerramento. Fora esse caso, o
+terceiro passo só pode acontecer na data_termino real, nunca antes (ver
+Migration 012: desativar antes da hora quebra cobrança e roteamento por
+WhatsApp, que dependem de status='ativo' até o fim do contrato).
 
 Cada contrato (e cada item da aplicação de reajuste / finalização de
 contrato) é processado isoladamente: um erro num contrato (ex: API do Banco
@@ -41,12 +57,14 @@ from app.tools.calculo_reajuste import (
 )
 from app.tools.contract_alerts_client import (
     aplicar_reajuste,
+    desativar_pendente_renovacao,
     finalizar_contrato,
     listar_clausulas_financeiras,
     listar_contratos_ativos,
     listar_reajustes_para_aplicar,
     registrar_alerta_renovacao,
     registrar_calculo_reajuste,
+    transicionar_prazo_indeterminado,
 )
 from app.tools.indice_reajuste_client import buscar_percentual_acumulado_12_meses
 from app.tools.mensagens_gestao_contratual import montar_alerta_renovacao, montar_calculo_reajuste
@@ -55,12 +73,19 @@ from app.tools.mensagens_gestao_contratual import montar_alerta_renovacao, monta
 # reajuste — só os dois índices com fonte externa (Banco Central) publicada.
 _INDICES_COM_CALCULO_AUTOMATICO = ("igpm", "ipca")
 
+# tipo_renovacao que dependem de decisão da gestora até data_termino
+# (Migration 016) — os demais (novo_contrato, indeterminado_por_lei) têm
+# caminho próprio no dispatcher abaixo, sem passar por pendência.
+_TIPOS_RENOVACAO_ACIONAVEIS = ("requer_aditivo", "automatica", "nao_identificado")
+
 
 class ResultadoExecucaoAlertas(BaseModel):
     alertas_renovacao: list[str] = Field(default_factory=list)
     calculos_reajuste: list[str] = Field(default_factory=list)
     reajustes_aplicados: list[UUID] = Field(default_factory=list)
     contratos_finalizados: list[UUID] = Field(default_factory=list)
+    contratos_transicionados_indeterminado: list[UUID] = Field(default_factory=list)
+    contratos_pendentes_renovacao: list[UUID] = Field(default_factory=list)
     erros: list[str] = Field(default_factory=list)
 
 
@@ -81,10 +106,11 @@ def processar_alerta_renovacao(
     *,
     registrar_alerta_renovacao_fn: Callable[[UUID, date], bool],
 ) -> Optional[str]:
-    # Contratos de prazo indeterminado (ex: renovação por inércia, cláusula
-    # 3.3) não têm mais uma data de término real — data_termino aqui é só
-    # um valor histórico. Pular o Fluxo A pra eles é deliberado, não uma
-    # omissão: ver docs/schemas/013_prazo_indeterminado.sql.
+    # Contratos de prazo indeterminado (ex: cláusula de renovação por
+    # inércia, ou já transicionados por indeterminado_por_lei) não têm mais
+    # uma data de término real — data_termino aqui é só um valor histórico.
+    # Pular o Fluxo A pra eles é deliberado, não uma omissão: ver
+    # docs/schemas/013_prazo_indeterminado.sql.
     if contrato.prazo_indeterminado:
         return None
 
@@ -186,40 +212,55 @@ def processar_finalizacao_contrato(
     hoje: date,
     *,
     finalizar_contrato_fn: Callable[[UUID], bool],
-) -> Optional[UUID]:
-    """Mesmo estilo de processar_alerta_renovacao/processar_calculo_reajuste:
-    função pura, testável com um fake injetado em finalizar_contrato_fn, sem
-    precisar de uma segunda leitura em lote — contrato.data_termino já veio
-    de listar_contratos_ativos(), que o loop principal já percorre.
+    desativar_pendente_renovacao_fn: Callable[[UUID], bool],
+    transicionar_indeterminado_fn: Callable[[UUID], bool],
+) -> Optional[tuple[str, UUID]]:
+    """Dispatcher por contrato.tipo_renovacao (Migration 016). Função pura,
+    testável com fakes injetados nos três Callable, sem precisar de uma
+    segunda leitura em lote — contrato já veio de listar_contratos_ativos(),
+    que o loop principal percorre.
 
-    Incondicional: não depende de nenhuma decisão da gestora (o painel de
-    renovação é só aviso). Só pode acontecer na data_termino real (ver
+    Retorna uma tupla (status, contract_id) para o chamador decidir em qual
+    lista de ResultadoExecucaoAlertas colocar o id, ou None se nada foi
+    feito (fora da data_termino, ou a escrita não confirmou a condição
+    esperada no banco no momento exato da execução).
+
+    Contratos de prazo indeterminado (Migration 013) NUNCA passam por
+    nenhum dos três caminhos abaixo — data_termino, pra eles, é um valor
+    histórico/decorativo, não uma data real de encerramento. Sem este
+    guard, um contrato de prazo indeterminado cujo data_termino
+    "decorativo" um dia coincidisse com `hoje` seria processado por engano
+    — o mesmo risco que motivou o guard equivalente em
+    processar_alerta_renovacao acima.
+
+    Fora esse caso, só pode acontecer na data_termino real (ver
     Migration 012): fazer isso antes desligaria o contrato antes da hora,
     quebrando cobrança e roteamento por WhatsApp, que dependem de
     status='ativo' até o fim do contrato.
 
-    finalizar_contrato_fn pode devolver False sem lançar exceção — o guard
-    (status ainda 'ativo' no momento da escrita) é reforçado dentro da
-    própria função SQL (agent_finalizar_contrato). Isso não é descartado em
-    silêncio: quem chama decide o que fazer com o None devolvido.
-
-    Contratos de prazo indeterminado (Migration 013) NUNCA finalizam por
-    esta via — data_termino, pra eles, é um valor histórico/decorativo, não
-    uma data real de encerramento (a renovação por inércia não tem fim
-    previsto). Sem este guard, um contrato de prazo indeterminado cujo
-    data_termino "decorativo" um dia coincidisse com `hoje` seria desativado
-    por engano, incondicionalmente — o mesmo risco que motivou o guard
-    equivalente em processar_alerta_renovacao acima."""
+    Nenhuma das três funções injetadas deve ter sucesso silencioso assumido
+    quando devolve False — cada uma reforça seu próprio guard (status
+    ainda 'ativo', ou ainda não prazo_indeterminado) dentro da transação no
+    banco, porque o estado pode ter mudado entre a leitura em lote e a vez
+    deste contrato ser escrito (retry do job, ou ação manual da gestora)."""
     if contrato.prazo_indeterminado:
         return None
 
     if contrato.data_termino != hoje:
         return None
 
-    if not finalizar_contrato_fn(contrato.id):
-        return None  # já não estava mais 'ativo' — outra chamada já finalizou
+    if contrato.tipo_renovacao == "indeterminado_por_lei":
+        ok = transicionar_indeterminado_fn(contrato.id)
+        return ("transicionado_indeterminado", contrato.id) if ok else None
 
-    return contrato.id
+    if contrato.tipo_renovacao in _TIPOS_RENOVACAO_ACIONAVEIS:
+        ok = desativar_pendente_renovacao_fn(contrato.id)
+        return ("pendente_renovacao", contrato.id) if ok else None
+
+    # tipo_renovacao == "novo_contrato" (ou qualquer valor não mapeado
+    # acima, por segurança): comportamento original, sem pendência.
+    ok = finalizar_contrato_fn(contrato.id)
+    return ("finalizado", contrato.id) if ok else None
 
 
 def executar_alertas_contratuais(hoje: Optional[date] = None) -> ResultadoExecucaoAlertas:
@@ -250,13 +291,23 @@ def executar_alertas_contratuais(hoje: Optional[date] = None) -> ResultadoExecuc
             resultado.erros.append(f"contrato {contrato.id} (cálculo de reajuste): {erro}")
 
         try:
-            finalizado = processar_finalizacao_contrato(
-                contrato, hoje, finalizar_contrato_fn=finalizar_contrato
+            resultado_finalizacao = processar_finalizacao_contrato(
+                contrato,
+                hoje,
+                finalizar_contrato_fn=finalizar_contrato,
+                desativar_pendente_renovacao_fn=desativar_pendente_renovacao,
+                transicionar_indeterminado_fn=transicionar_prazo_indeterminado,
             )
-            if finalizado:
-                resultado.contratos_finalizados.append(finalizado)
+            if resultado_finalizacao:
+                status, contrato_id = resultado_finalizacao
+                if status == "transicionado_indeterminado":
+                    resultado.contratos_transicionados_indeterminado.append(contrato_id)
+                elif status == "pendente_renovacao":
+                    resultado.contratos_pendentes_renovacao.append(contrato_id)
+                else:
+                    resultado.contratos_finalizados.append(contrato_id)
         except Exception as erro:  # noqa: BLE001
-            resultado.erros.append(f"contrato {contrato.id} (finalização no término): {erro}")
+            resultado.erros.append(f"contrato {contrato.id} (finalização/renovação no término): {erro}")
 
     aplicados, erros_aplicacao = _aplicar_reajustes_confirmados(hoje)
     resultado.reajustes_aplicados = aplicados
