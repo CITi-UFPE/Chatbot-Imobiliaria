@@ -2,6 +2,7 @@ import { FileText, HandCoins, Droplets, Wrench, TrendingUp, CalendarClock, Build
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import type { SectionKey } from "@/routes/index";
+import predioImg from "@/assets/predio-ilustracao.jpg";
 
 const items: { key: SectionKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "contratos", label: "Contratos", icon: FileText },
@@ -85,15 +86,13 @@ export function AppSidebar({
           })}
         </nav>
 
-        {/* Cartão decorativo — só imagem/legenda genérica, não representa
-            nenhum imóvel real do banco nem tem ação clicável. */}
+        {/* Cartão decorativo — ilustração/legenda genérica (imagem enviada
+            pelo Davi), não representa nenhum imóvel real do banco nem tem
+            ação clicável. */}
         <div className="mx-3 mb-4 rounded-xl overflow-hidden border bg-card">
           <div
-            className="h-24 w-full bg-cover bg-center bg-muted"
-            style={{
-              backgroundImage:
-                "url('https://images.unsplash.com/photo-1560518883-ce09059eeffa?auto=format&fit=crop&w=600&q=80')",
-            }}
+            className="h-24 w-full bg-cover bg-center"
+            style={{ backgroundImage: `url(${predioImg})` }}
           />
           <div className="px-3 py-2.5 text-xs text-muted-foreground">
             Gestão simplificada, em um só lugar.

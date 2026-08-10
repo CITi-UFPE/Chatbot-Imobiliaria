@@ -99,7 +99,12 @@
   --card-foreground: var(--ink-950);
   --popover: #ffffff;
   --popover-foreground: var(--ink-950);
-  --primary: var(--ink-950);
+  /* v3 — redesign "quente": primary passa de ink-950 (quase preto) pra
+     --brand (terracota, já existia como cor de marca mas era subutilizada).
+     Efeito em cascata proposital: todo botão/estado "primary" do app (login,
+     nav ativa da sidebar, CTAs) vira terracota de uma vez só, sem precisar
+     tocar em cada componente — só o token muda, nenhuma classe/lógica. */
+  --primary: var(--brand);
   --primary-foreground: #fdfbf8;
   --secondary: var(--ink-100);
   --secondary-foreground: var(--ink-950);
@@ -168,7 +173,7 @@
   --tile-a-bg: var(--brand-soft);      --tile-a-fg: var(--brand-strong);
   --tile-b-bg: var(--brand-soft-2);    --tile-b-fg: var(--brand);
   --tile-c-bg: var(--warning-surface); --tile-c-fg: var(--warning-accent);
-  --tile-d-bg: var(--ink-100);         --tile-d-fg: var(--success-accent);
+  --tile-d-bg: var(--success-surface); --tile-d-fg: var(--success-accent);
 
   /* ---- Categorias de manutenção ---- */
   --cat-eletrica-bg: var(--warning-surface);   --cat-eletrica-fg: var(--warning-accent);
@@ -271,4 +276,24 @@
 /* Números tabulares — tabelas de dinheiro/consumo (Água, Cobranças). */
 .tnum {
   font-variant-numeric: tabular-nums;
+}
+
+/* v3 — decoração "quente": só usadas como pano de fundo estático (nenhuma
+   reflete dado real). Reaproveitam os tokens de marca já existentes, nada
+   de cor nova "à mão". */
+.bg-warm-gradient {
+  background-image: radial-gradient(ellipse 120% 80% at 100% 0%, var(--brand-soft-2), transparent 60%),
+    radial-gradient(ellipse 100% 60% at 0% 100%, var(--brand-soft), transparent 55%);
+  background-color: var(--ink-50);
+}
+
+.bg-warm-gradient-strong {
+  background-image: radial-gradient(ellipse 120% 90% at 100% 0%, var(--brand-soft), transparent 55%),
+    radial-gradient(ellipse 90% 70% at 10% 100%, var(--warning-surface), transparent 55%);
+  background-color: #fffaf3;
+}
+
+.bg-dot-grid {
+  background-image: radial-gradient(var(--ink-300) 1px, transparent 1px);
+  background-size: 18px 18px;
 }

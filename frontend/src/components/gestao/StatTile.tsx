@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Sparkline } from "@/components/gestao/decor/Sparkline";
 
 // Puramente apresentacional (sem estado, sem fetch) — espelha o StatCard do
 // "GestãoImob Design System" (Claude Design). Quem chama decide o valor;
@@ -33,9 +34,14 @@ export function StatTile({
           {icon}
         </div>
       </div>
-      <div>
-        <div className="text-2xl font-bold tracking-tight tnum">{value}</div>
-        {sublabel && <div className="text-xs text-muted-foreground mt-0.5">{sublabel}</div>}
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <div className="text-2xl font-bold tracking-tight tnum">{value}</div>
+          {sublabel && <div className="text-xs text-muted-foreground mt-0.5">{sublabel}</div>}
+        </div>
+        {/* Decorativo — não reflete série histórica real, só reforça a
+            leitura visual do tile (mesmo tom do ícone). */}
+        <Sparkline className={`h-5 w-14 shrink-0 mb-0.5 ${TONE_CLASSES[tone].split(" ")[1]}`} />
       </div>
     </div>
   );

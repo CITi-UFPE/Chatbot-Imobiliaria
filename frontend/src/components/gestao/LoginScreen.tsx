@@ -1,10 +1,20 @@
 import { useState } from "react";
-import { Building2, Eye, EyeOff, Loader2 } from "lucide-react";
+import { Building2, Eye, EyeOff, Loader2, Mail, Lock, LayoutGrid, Wallet, FileCheck2, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import predioImg from "@/assets/predio-ilustracao.jpg";
+
+// Só decorativo — texto e ícones de apoio visual no painel do login, sem
+// link/ação nenhuma por trás (não são funcionalidades reais do produto).
+const FEATURE_HIGHLIGHTS = [
+  { icon: LayoutGrid, label: "Visão completa dos imóveis" },
+  { icon: Wallet, label: "Controle financeiro inteligente" },
+  { icon: FileCheck2, label: "Contratos e documentos organizados" },
+  { icon: Wrench, label: "Manutenção sob controle" },
+];
 
 export function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -51,14 +61,18 @@ export function LoginScreen() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">E-mail</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="voce@empresa.com"
-              />
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  id="email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="voce@empresa.com"
+                  className="pl-9"
+                />
+              </div>
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -72,6 +86,7 @@ export function LoginScreen() {
                 </button>
               </div>
               <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   id="password"
                   type={showPassword ? "text" : "password"}
@@ -79,7 +94,7 @@ export function LoginScreen() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="pr-10"
+                  className="pl-9 pr-10"
                 />
                 <button
                   type="button"
@@ -104,25 +119,47 @@ export function LoginScreen() {
       </div>
       </div>
 
-      {/* Painel decorativo — só imagem/tagline de marca, sem nenhum dado ou
-          funcionalidade real por trás (nada aqui reflete o banco). Some no
-          mobile (md:grid-cols acima já reserva essa coluna só a partir de md). */}
-      <div className="hidden md:block relative overflow-hidden bg-primary">
+      {/* Painel decorativo — só ilustração/tagline de marca, sem nenhum dado
+          ou funcionalidade real por trás (nada aqui reflete o banco). Some
+          no mobile (md:grid-cols acima já reserva essa coluna só a partir de
+          md). Imagem enviada pelo Davi (frontend/src/assets/predio-ilustracao.jpg)
+          cobrindo o painel inteiro, com um degradê por cima só onde tem
+          texto, pra manter a leitura. */}
+      <div className="hidden md:flex flex-col relative overflow-hidden bg-warm-gradient-strong px-12 py-10">
         <div
           className="absolute inset-0 bg-cover bg-center"
+          style={{ backgroundImage: `url(${predioImg})` }}
+        />
+        <div
+          className="absolute inset-0"
           style={{
-            backgroundImage:
-              "url('https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1400&q=80')",
+            background:
+              "linear-gradient(135deg, var(--ink-50) 0%, color-mix(in oklab, var(--ink-50) 65%, transparent) 32%, transparent 55%), linear-gradient(to top, var(--ink-50) 0%, color-mix(in oklab, var(--ink-50) 75%, transparent) 22%, transparent 45%)",
           }}
         />
-        <div className="absolute inset-0 bg-gradient-to-b from-black/10 to-black/60" />
-        <div className="absolute left-10 right-10 bottom-10">
-          <p className="font-serif text-2xl font-medium text-white leading-tight max-w-sm">
-            Simplifique a gestão dos seus imóveis.
+
+        <div className="relative max-w-md">
+          <p className="font-serif text-3xl font-medium text-foreground leading-tight">
+            Simplifique a gestão{" "}
+            <span style={{ color: "var(--brand)" }}>dos seus imóveis.</span>
           </p>
-          <p className="text-sm text-white/80 mt-2 max-w-xs">
+          <p className="text-sm text-muted-foreground mt-3 max-w-sm">
             Contratos, cobranças, manutenção e reajustes — tudo centralizado em um só painel.
           </p>
+        </div>
+
+        <div className="relative flex flex-wrap gap-x-8 gap-y-4 mt-auto">
+          {FEATURE_HIGHLIGHTS.map(({ icon: Icon, label }) => (
+            <div key={label} className="flex items-center gap-2.5">
+              <div
+                className="h-9 w-9 shrink-0 rounded-lg flex items-center justify-center"
+                style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand-strong)" }}
+              >
+                <Icon className="h-4 w-4" />
+              </div>
+              <span className="text-xs font-medium text-foreground/80 leading-tight">{label}</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>

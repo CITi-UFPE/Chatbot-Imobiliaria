@@ -13,6 +13,7 @@ import { RenovacaoSection } from "@/components/gestao/RenovacaoSection";
 import { LoginScreen } from "@/components/gestao/LoginScreen";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
+import skylineImg from "@/assets/skyline-fundo.jpg";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -84,9 +85,21 @@ function Index() {
   }
 
   return (
-    <div className="flex min-h-screen w-full bg-muted/30">
+    <div className="flex min-h-screen w-full bg-warm-gradient relative overflow-hidden">
+      {/* Textura de fundo bem sutil (imagem enviada pelo Davi) — só
+          decorativa, opacidade baixa pra não atrapalhar leitura, não
+          reflete nenhum dado real. */}
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-cover bg-top opacity-40"
+        style={{
+          backgroundImage: `url(${skylineImg})`,
+          maskImage: "linear-gradient(to bottom, black, transparent)",
+          WebkitMaskImage: "linear-gradient(to bottom, black, transparent)",
+        }}
+        aria-hidden="true"
+      />
       <AppSidebar current={section} onChange={setSection} />
-      <main className="flex-1 min-w-0 overflow-x-hidden">
+      <main className="flex-1 min-w-0 overflow-x-hidden relative">
         <div className="mx-auto max-w-7xl px-4 py-6 md:px-8 md:py-10">
           <div className="flex items-center justify-end mb-4 gap-3">
             <span className="text-sm text-muted-foreground hidden sm:inline">{user}</span>
