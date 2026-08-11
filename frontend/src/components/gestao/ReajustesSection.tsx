@@ -127,6 +127,26 @@ function ReajustesManuaisSection() {
         .update({ valor_aluguel: novo })
         .eq("id", c.id);
       if (error) throw error;
+
+      // BUGFIX: um reajuste manual mudava contracts.valor_aluguel mas
+      // deixava contract_alerts.valor_sugerido intocado. Como
+      // ReajustesAniversarioSection calcula `sugerido` com
+      // `a.valorSugerido ?? a.valorAtual * (1 + percentual / 100)`, e
+      // valor_sugerido já vem preenchido desde a criação do alerta (não é
+      // null), o `??` nunca recalculava — o card de aniversário continuava
+      // mostrando o valor sugerido antigo, calculado sobre o valor_aluguel
+      // anterior ao reajuste manual. Zerando valor_sugerido aqui para
+      // qualquer alerta de reajuste de aniversário ainda pendente deste
+      // contrato, o `??` volta a cair no cálculo, agora sobre o
+      // valor_aluguel já atualizado.
+      const { error: errAlerta } = await supabase
+        .from("contract_alerts")
+        .update({ valor_sugerido: null })
+        .eq("contract_id", c.id)
+        .eq("tipo", "calculo_reajuste_d30")
+        .or("decisao_gestora.is.null,decisao_gestora.eq.pendente");
+      if (errAlerta) throw errAlerta;
+
       return novo;
     },
     onSuccess: (novo, c) => {
@@ -135,6 +155,12 @@ function ReajustesManuaisSection() {
         description: `${c.inquilino}: ${brl(c.valorAtual)} → ${brl(novo)}`,
       });
       queryClient.invalidateQueries({ queryKey: CONTRATOS_ATIVOS_KEY });
+      // BUGFIX: faltava invalidar a query de reajustes de aniversário —
+      // sem isso o card de "Reajustes de aniversário" só refletiria o novo
+      // valor sugerido depois de um refetch por outro motivo (troca de
+      // aba, refresh manual etc.), não imediatamente após o reajuste
+      // manual.
+      queryClient.invalidateQueries({ queryKey: REAJUSTES_ANIVERSARIO_KEY });
     },
     onError: (error: Error) => toast.error(error.message || "Não foi possível aplicar o reajuste"),
   });

@@ -76,12 +76,20 @@ async function fetchAlertas(tipo: "alerta_renovacao_d60"): Promise<AlertaComCont
   // traga os dados do contrato pra cada alerta — sem isso o PostgREST
   // devolveria a linha do alerta com contracts=null quando o relacionamento
   // não bate, o que quebraria a leitura de status/tipo_renovacao abaixo.
+  //
+  // decisao_gestora='pendente' (Migration 017) é o que faz o card sumir de
+  // vez quando a gestora resolve pelo DecisaoRenovacaoDialog ou pelo botão
+  // "Confirmar encerramento" abaixo — sem esse filtro, o alerta some do
+  // dashboard e volta a aparecer (com o badge de vencido desatualizado),
+  // porque a única coisa que mudava antes era o estado em contracts, nunca
+  // o próprio alerta.
   const { data, error } = await supabase
     .from("contract_alerts")
     .select(
       "id, contract_id, data_disparo, percentual_reajuste, valor_sugerido, contracts!inner(inquilino_nome, valor_aluguel, status, tipo_renovacao, pendente_decisao_renovacao)",
     )
     .eq("tipo", tipo)
+    .eq("decisao_gestora", "pendente")
     .order("data_disparo");
   if (error) throw error;
 
@@ -132,13 +140,21 @@ function prazoInfo(dataDisparo: string): { texto: string; vencidoPorData: boolea
  * gestora fazendo o update. Funciona tanto pro card ainda ativo (D-60,
  * decidindo antes do vencimento) quanto pro card já vencido/inativo
  * (reativando o contrato) — é a mesma decisão nos dois casos.
+ *
+ * Depois de decidir em contracts, também grava decisao_gestora='renovado'
+ * no próprio alerta (Migration 017) — é isso que faz o card sumir da
+ * lista em fetchAlertas acima. Sem esse segundo update, o alerta ficava
+ * 'pendente' pra sempre e o card reaparecia (com badge de vencido) mesmo
+ * já resolvido.
  * ============================================================ */
 
 function DecisaoRenovacaoDialog({
   contractId,
+  alertId,
   onConfirmado,
 }: {
   contractId: string;
+  alertId: string;
   onConfirmado: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -147,7 +163,7 @@ function DecisaoRenovacaoDialog({
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const { error } = await supabase
+      const { error: errContrato } = await supabase
         .from("contracts")
         .update({
           status: "ativo",
@@ -157,7 +173,13 @@ function DecisaoRenovacaoDialog({
             : { data_termino: novaData, prazo_indeterminado: false }),
         })
         .eq("id", contractId);
-      if (error) throw error;
+      if (errContrato) throw errContrato;
+
+      const { error: errAlerta } = await supabase
+        .from("contract_alerts")
+        .update({ decisao_gestora: "renovado" })
+        .eq("id", alertId);
+      if (errAlerta) throw errAlerta;
     },
     onSuccess: () => {
       toast.success("Renovação definida com sucesso");
@@ -165,9 +187,15 @@ function DecisaoRenovacaoDialog({
       setNovaData("");
       onConfirmado();
     },
-    onError: (error) => {
+    onError: (error: any) => {
       console.error("Erro ao definir renovação:", error);
-      toast.error("Não foi possível definir a renovação. Tente novamente.");
+      if (error?.code === "23505") {
+        toast.error(
+          "Já existe outro contrato ativo com este telefone. Verifique se este inquilino não migrou para um contrato novo antes de reativar este.",
+        );
+      } else {
+        toast.error("Não foi possível definir a renovação. Tente novamente.");
+      }
     },
   });
 
@@ -245,12 +273,22 @@ function RenovacaoSectionInner() {
   const invalidar = () => queryClient.invalidateQueries({ queryKey: RENOVACOES_KEY });
 
   const descartarMutation = useMutation({
-    mutationFn: async (contractId: string) => {
-      const { error } = await supabase
+    mutationFn: async ({ contractId, alertId }: { contractId: string; alertId: string }) => {
+      const { error: errContrato } = await supabase
         .from("contracts")
         .update({ pendente_decisao_renovacao: false })
         .eq("id", contractId);
-      if (error) throw error;
+      if (errContrato) throw errContrato;
+
+      // Mesma lógica do DecisaoRenovacaoDialog acima: sem gravar a decisão
+      // no próprio alerta (Migration 017), o card reaparecia depois de
+      // "resolvido" porque contract_alerts.decisao_gestora continuava
+      // 'pendente' pra sempre.
+      const { error: errAlerta } = await supabase
+        .from("contract_alerts")
+        .update({ decisao_gestora: "encerrado" })
+        .eq("id", alertId);
+      if (errAlerta) throw errAlerta;
     },
     onSuccess: () => {
       toast.success("Encerramento confirmado");
@@ -349,13 +387,17 @@ function RenovacaoSectionInner() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => descartarMutation.mutate(a.contractId)}
+                            onClick={() => descartarMutation.mutate({ contractId: a.contractId, alertId: a.alertId })}
                             disabled={descartarMutation.isPending}
                           >
                             Confirmar encerramento
                           </Button>
                         )}
-                        <DecisaoRenovacaoDialog contractId={a.contractId} onConfirmado={invalidar} />
+                        <DecisaoRenovacaoDialog
+                          contractId={a.contractId}
+                          alertId={a.alertId}
+                          onConfirmado={invalidar}
+                        />
                       </div>
                     )}
                   </div>
