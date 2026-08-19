@@ -12,6 +12,13 @@ from app.tools.text_matching import normalizar
 # relacionadas (ex: "gas" em "gastei").
 _RADICAIS_CLAUSULA_REAJUSTE = ("reajust", "indice", "correcao monetaria")
 
+# livre_negociacao (ou índice não definido) não tem cálculo automático de
+# reajuste — só os dois índices com fonte externa (Banco Central) publicada.
+# Compartilhada entre app/agents/a4_gestao_contratual/fluxo.py (decide se
+# calcula o Fluxo B) e app/agents/a1_atendimento/atendimento.py (decide se
+# recalcula data_aniversario_reajuste em tempo real) para não driftar.
+INDICES_COM_CALCULO_AUTOMATICO = ("igpm", "ipca")
+
 
 def esta_na_janela_alerta_renovacao(data_termino: date, hoje: date, dias_antecedencia: int = 60) -> bool:
     """Fluxo A: true no dia exato em que faltam `dias_antecedencia` para o
