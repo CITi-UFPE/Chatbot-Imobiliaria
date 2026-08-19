@@ -40,10 +40,12 @@ diretamente, sem passar por avaliar_escalonamento de novo.
 
 import json
 import logging
+from datetime import date
 
 import anthropic
 
 from app.agents.a1_atendimento.schemas import DadosInquilino, RegistroHistorico
+from app.tools.calculo_reajuste import INDICES_COM_CALCULO_AUTOMATICO, proximo_aniversario_contrato
 from app.agents.a5_escalonamento import (
     AvaliacaoEscalonamento,
     avaliar_escalonamento,
@@ -229,6 +231,18 @@ def _executar_buscar_dados_inquilino(contract_id: str) -> dict:
     client = obter_client_agente(contract_id)
     resposta = client.rpc("buscar_dados_inquilino", {}).execute()
     dados = resposta.data or {}
+
+    # data_aniversario_reajuste vindo do banco é o que a extração do PDF
+    # capturou na assinatura — fica desatualizado assim que o tempo passa
+    # (ver Migration/extração: mesmo bug que o A4 evita calculando isso em
+    # runtime, nunca lendo essa coluna). Recalcula aqui do mesmo jeito que o
+    # A4 faz, com 'hoje' de verdade — só se aplica a índice com cálculo
+    # automático (igpm/ipca); livre_negociacao não tem aniversário calculável.
+    if dados.get("indice_reajuste") in INDICES_COM_CALCULO_AUTOMATICO and dados.get("data_inicio"):
+        data_inicio = date.fromisoformat(dados["data_inicio"])
+        dados["data_aniversario_reajuste"] = proximo_aniversario_contrato(
+            data_inicio, date.today()
+        ).isoformat()
 
     # valida contra o schema esperado ANTES de repassar pro modelo — se a
     # RPC mudar de formato no banco, isso deve quebrar aqui de forma

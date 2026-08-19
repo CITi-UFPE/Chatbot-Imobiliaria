@@ -1,4 +1,5 @@
 import base64
+import logging
 import sys
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from app.models.contract import ExtracaoContratoResult
 from app.tools.anthropic_helpers import extrair_bloco_tool_use
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-5"
 
@@ -37,7 +40,11 @@ SYSTEM_PROMPT = (
     "separada na lista, com seu próprio numero_clausula (ex: '1.1', '1.2', ou "
     "'15.a', '15.b' para alíneas sem numeração própria) e sua própria categoria — "
     "não agrupe vários sub-itens sob o número da cláusula-mãe, mesmo que "
-    "compartilhem um título ou introdução comuns."
+    "compartilhem um título ou introdução comuns. Categorize cada cláusula pelo "
+    "conteúdo real dela, nunca pela seção ou cabeçalho em que está posicionada no "
+    "contrato — por exemplo, uma cláusula sobre devolução do imóvel no estado em "
+    "que foi recebido é 'conservacao' mesmo se estiver dentro de uma seção sobre "
+    "prazo de vigência."
 )
 
 TOOL_NAME = "registrar_dados_contrato"
@@ -101,6 +108,13 @@ def extrair_dados_contrato(
             ],
         ) as stream:
             response = stream.get_final_message()
+
+        logger.info(
+            "[extração] modelo=%s input_tokens=%s output_tokens=%s",
+            model,
+            response.usage.input_tokens,
+            response.usage.output_tokens,
+        )
 
         if response.stop_reason == "refusal":
             raise RuntimeError(f"Claude recusou a extração para {caminho_pdf}: {response.stop_details}")

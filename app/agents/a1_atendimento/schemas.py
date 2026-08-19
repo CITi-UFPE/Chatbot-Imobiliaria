@@ -68,7 +68,7 @@ class DadosInquilino(BaseModel):
     vencimento_mes_referencia: Literal["atual", "anterior"]
     data_inicio: str
     data_termino: str
-    indice_reajuste: Optional[Literal["igpm", "livre_negociacao"]] = None
+    indice_reajuste: Optional[Literal["igpm", "ipca", "livre_negociacao"]] = None
     data_aniversario_reajuste: Optional[str] = None
     garantia_tipo: Literal["fiador", "caucao"]
     garantia_valor: Optional[float] = None

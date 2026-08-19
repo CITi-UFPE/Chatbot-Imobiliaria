@@ -861,7 +861,13 @@ function UploadWizard({
                     </SelectContent>
                   </Select>
                 </Field>
-                <Field label="Multa por infração (nº de aluguéis)">
+                <Field
+                  label={
+                    dados.multa_infracao_tipo === "meses_aluguel"
+                      ? "Multa por infração (nº de aluguéis)"
+                      : "Multa por infração (% do valor anual)"
+                  }
+                >
                   <Input
                     type="number"
                     value={dados.multa_infracao_valor}

@@ -48,6 +48,7 @@ from pydantic import BaseModel, Field
 
 from app.models.contract_alerts import ContratoParaAlerta
 from app.tools.calculo_reajuste import (
+    INDICES_COM_CALCULO_AUTOMATICO,
     calcular_periodo_contrato_meses,
     calcular_valor_reajustado,
     esta_na_janela_alerta_renovacao,
@@ -68,10 +69,6 @@ from app.tools.contract_alerts_client import (
 )
 from app.tools.indice_reajuste_client import buscar_percentual_acumulado_12_meses
 from app.tools.mensagens_gestao_contratual import montar_alerta_renovacao, montar_calculo_reajuste
-
-# livre_negociacao (ou índice não definido) não tem cálculo automático de
-# reajuste — só os dois índices com fonte externa (Banco Central) publicada.
-_INDICES_COM_CALCULO_AUTOMATICO = ("igpm", "ipca")
 
 # tipo_renovacao que dependem de decisão da gestora até data_termino
 # (Migration 016) — os demais (novo_contrato, indeterminado_por_lei) têm
@@ -142,7 +139,7 @@ def processar_calculo_reajuste(
     registrar_calculo_reajuste_fn: Callable[[UUID, date, float, float], bool],
     listar_clausulas_fn: Callable[[UUID], list[tuple[str, str]]],
 ) -> Optional[str]:
-    if contrato.indice_reajuste not in _INDICES_COM_CALCULO_AUTOMATICO:
+    if contrato.indice_reajuste not in INDICES_COM_CALCULO_AUTOMATICO:
         return None
 
     if not esta_na_janela_calculo_reajuste(contrato.data_inicio, hoje):

@@ -101,7 +101,14 @@ class ContratoExtraido(BaseModel):
         default=None, description="Índice usado para reajuste anual do aluguel, se especificado."
     )
     data_aniversario_reajuste: Optional[date] = Field(
-        default=None, description="Data-base do reajuste anual, quando houver um dia fixo definido."
+        default=None,
+        description=(
+            "Preencha SOMENTE se o contrato mencionar uma data completa e explícita (dia/mês/ano) "
+            "para o reajuste — não calcule nem projete uma ocorrência futura a partir do dia/mês "
+            "de aniversário. Isso é calculado em outro lugar do sistema a partir de data_inicio, "
+            "no momento em que for necessário; a extração não sabe 'hoje' e uma data calculada aqui "
+            "fica errada assim que o tempo passa. Na dúvida, deixe null."
+        ),
     )
     multa_infracao_tipo: Literal["meses_aluguel", "percentual_valor_anual"] = Field(
         description="Como a multa por infração contratual é calculada."
@@ -120,8 +127,21 @@ class ContratoExtraido(BaseModel):
     aviso_previo_a_partir_mes: int = Field(
         description="A partir de qual mês de contrato o aviso prévio passa a valer."
     )
-    banco_agencia: Optional[str] = Field(default=None, description="Agência bancária para pagamento.")
-    banco_conta: Optional[str] = Field(default=None, description="Conta bancária para pagamento.")
+    banco_agencia: Optional[str] = Field(
+        default=None,
+        description=(
+            "Só o número da agência bancária para pagamento (ex: '3237-9') — sem nome do banco, sem "
+            "a palavra 'agência', sem nenhum outro texto misturado. Nome do banco, se relevante, vai "
+            "em observacoes, não aqui."
+        ),
+    )
+    banco_conta: Optional[str] = Field(
+        default=None,
+        description=(
+            "Só o número da conta bancária para pagamento (ex: '7421-7') — sem 'conta corrente', sem "
+            "nenhum outro texto misturado."
+        ),
+    )
     pix_chave: Optional[str] = Field(default=None, description="Chave PIX para pagamento, se informada.")
     observacoes: Optional[str] = Field(
         default=None,
