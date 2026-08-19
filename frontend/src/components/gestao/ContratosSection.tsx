@@ -93,6 +93,18 @@ const OPCOES_TIPO_RENOVACAO: { value: TipoRenovacao; label: string; descricao: s
   },
 ];
 
+// Mesmo padrão de formatação usado em ReajustesSection.tsx/RenovacaoSection.tsx
+// (e a versão com maximumFractionDigits de CobrancasSection.tsx, pra nunca
+// aparecer resíduo de ponto flutuante tipo "R$ 3000,000000000004").
+// Só usado nos pontos somente-leitura (revisão do Passo 2) — o campo do
+// Passo 3 continua um <Input type="number"> puro, formatar ali quebraria a edição.
+function formatarValorBRL(valor: number): string {
+  return valor.toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 function isDataPassada(dataStr: string): boolean {
   if (!dataStr) return false;
   const hoje = new Date();
@@ -700,9 +712,10 @@ function UploadWizard({
             )}
 
             <dl className="grid sm:grid-cols-2 gap-4 text-sm bg-muted/30 rounded-lg p-4">
-              <ExtractRow label="Imóvel" value={dados.imovel_endereco} />
+              <ExtractRow label="Nome do Imóvel" value={dados.imovel_identificacao || "—"} />
+              <ExtractRow label="Endereço" value={dados.imovel_endereco} />
               <ExtractRow label="Inquilino" value={dados.inquilino_nome} />
-              <ExtractRow label="Valor" value={`R$ ${dados.valor_aluguel}`} />
+              <ExtractRow label="Valor" value={`R$ ${formatarValorBRL(dados.valor_aluguel)}`} />
               <ExtractRow label="Vencimento (término)" value={dados.data_termino} />
               <ExtractRow label="Fiador" value={dados.fiador_nome ?? "—"} />
               <ExtractRow label="Cláusulas" value={`${clausulas.length} detectadas`} />
@@ -720,7 +733,13 @@ function UploadWizard({
         {step === 3 && dados && (
           <div className="space-y-5">
             <div className="grid md:grid-cols-2 gap-4">
-              <Field label="Imóvel">
+              <Field label="Nome do Imóvel">
+                <Input
+                  value={dados.imovel_identificacao}
+                  onChange={(e) => updateDados({ imovel_identificacao: e.target.value })}
+                />
+              </Field>
+              <Field label="Endereço">
                 <Input
                   value={dados.imovel_endereco}
                   onChange={(e) => updateDados({ imovel_endereco: e.target.value })}
