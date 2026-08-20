@@ -50,6 +50,18 @@ def test_caucao_sem_valor_falha():
         ContratoExtraido(**CAMPOS_BASE, garantia_tipo="caucao")
 
 
+def test_aluguel_antecipado_com_valor_valida():
+    contrato = ContratoExtraido(
+        **CAMPOS_BASE, garantia_tipo="aluguel_antecipado", garantia_valor=12000.0
+    )
+    assert contrato.garantia_tipo == "aluguel_antecipado"
+
+
+def test_aluguel_antecipado_sem_valor_falha():
+    with pytest.raises(ValidationError, match="garantia_valor"):
+        ContratoExtraido(**CAMPOS_BASE, garantia_tipo="aluguel_antecipado")
+
+
 def test_data_termino_antes_de_inicio_falha():
     campos = dict(CAMPOS_BASE, data_inicio="2027-01-01", data_termino="2026-01-01")
     with pytest.raises(ValidationError, match="data_termino"):

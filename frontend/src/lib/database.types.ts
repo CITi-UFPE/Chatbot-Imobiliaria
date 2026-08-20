@@ -8,7 +8,7 @@
 // CLI conectada ao projeto), esse arquivo pode ser substituído pela versão
 // gerada automaticamente — mais segura contra o schema divergir do código.
 
-export type GarantiaTipo = "fiador" | "caucao";
+export type GarantiaTipo = "fiador" | "caucao" | "aluguel_antecipado";
 export type TipoLocatario = "pf" | "pj";
 export type ContractStatus = "ativo" | "inativo" | "pendente_confirmacao";
 
