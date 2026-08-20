@@ -370,9 +370,9 @@ export function ContratosSection() {
       </div>
 
       <UploadWizard
-        existingActiveAddresses={imoveis
+        existingActiveImoveis={imoveis
           .filter((i) => i.status === "ativo")
-          .map((i) => i.imovel_endereco)}
+          .map((i) => ({ endereco: i.imovel_endereco, identificacao: i.imovel_identificacao }))}
       />
 
       <AlertDialog open={!!toDeactivate} onOpenChange={(o) => !o && setToDeactivate(null)}>
@@ -437,9 +437,9 @@ export function ContratosSection() {
 type Step = 1 | 2 | 3;
 
 function UploadWizard({
-  existingActiveAddresses,
+  existingActiveImoveis,
 }: {
-  existingActiveAddresses: string[];
+  existingActiveImoveis: { endereco: string; identificacao: string }[];
 }) {
   const queryClient = useQueryClient();
   const [step, setStep] = useState<Step>(1);
@@ -462,9 +462,18 @@ function UploadWizard({
   const [resolucaoModo, setResolucaoModo] = useState<"nova_data" | "indefinido">("nova_data");
   const [resolucaoNovaData, setResolucaoNovaData] = useState("");
 
+  // Duplicado = mesmo endereço E mesma identificação do imóvel (ex: mesmo
+  // prédio, mesmo apartamento). Comparar só o endereço dava falso positivo
+  // em prédios com várias unidades ativas (endereço da rua é igual, mas o
+  // apartamento é outro) — a identificação é o que de fato diferencia as
+  // unidades num mesmo endereço.
   const duplicado =
     !!dados &&
-    existingActiveAddresses.some((a) => a.toLowerCase() === dados.imovel_endereco.toLowerCase());
+    existingActiveImoveis.some(
+      (i) =>
+        i.endereco.trim().toLowerCase() === dados.imovel_endereco.trim().toLowerCase() &&
+        i.identificacao.trim().toLowerCase() === dados.imovel_identificacao.trim().toLowerCase(),
+    );
 
   const vencido = !!dados && isDataPassada(dados.data_termino);
   const acionavel = TIPOS_RENOVACAO_ACIONAVEIS.includes(tipoRenovacao);
@@ -704,7 +713,8 @@ function UploadWizard({
                 <div className="text-sm">
                   <div className="font-bold text-[var(--warning-strong)]">⚠ Contrato duplicado detectado</div>
                   <div className="text-[var(--warning-fg)]">
-                    Já existe um contrato <strong>ativo</strong> para o imóvel{" "}
+                    Já existe um contrato <strong>ativo</strong> para{" "}
+                    <strong>{dados.imovel_identificacao}</strong> em{" "}
                     <strong>{dados.imovel_endereco}</strong>. Verifique antes de prosseguir.
                   </div>
                 </div>
@@ -877,6 +887,7 @@ function UploadWizard({
                     <SelectContent>
                       <SelectItem value="fiador">Fiador</SelectItem>
                       <SelectItem value="caucao">Caução</SelectItem>
+                      <SelectItem value="aluguel_antecipado">Aluguel antecipado (sem fiador/depósito retido)</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>

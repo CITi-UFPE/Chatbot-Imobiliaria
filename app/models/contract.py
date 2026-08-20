@@ -83,11 +83,27 @@ class ContratoExtraido(BaseModel):
     fiador_endereco: Optional[str] = Field(
         default=None, description="Endereço residencial do fiador, se houver fiador."
     )
-    garantia_tipo: Literal["fiador", "caucao"] = Field(
-        description="Tipo de garantia locatícia usada no contrato."
+    garantia_tipo: Literal["fiador", "caucao", "aluguel_antecipado"] = Field(
+        description=(
+            "Tipo de garantia locatícia usada no contrato:\n"
+            "- fiador: há um fiador nomeado no contrato (requer fiador_nome e fiador_cpf).\n"
+            "- caucao: depósito em dinheiro retido formalmente à parte como garantia "
+            "(requer garantia_valor).\n"
+            "- aluguel_antecipado: não há fiador nem depósito retido; em vez disso, o "
+            "locatário pagou meses de aluguel ADIANTADOS como garantia (ex: 1º + último "
+            "mês) — use este valor quando o contrato descrever esse tipo de pagamento "
+            "adiantado, mesmo que o texto do contrato o chame informalmente de 'caução' "
+            "(requer garantia_valor com o total pago adiantado). Não invente qual destes "
+            "três se aplica: se nenhum estiver claro no texto, prefira o que exigir menos "
+            "suposição e registre a incerteza em observacoes."
+        )
     )
     garantia_valor: Optional[float] = Field(
-        default=None, description="Valor da caução, obrigatório quando garantia_tipo='caucao'."
+        default=None,
+        description=(
+            "Valor da garantia em dinheiro, obrigatório quando garantia_tipo='caucao' "
+            "(valor retido) ou garantia_tipo='aluguel_antecipado' (total pago adiantado)."
+        ),
     )
     valor_aluguel: float = Field(description="Valor mensal do aluguel.", gt=0)
     dia_vencimento: int = Field(description="Dia do mês em que o aluguel vence.", ge=1, le=31)
@@ -133,8 +149,10 @@ class ContratoExtraido(BaseModel):
     def valida_garantia(self) -> "ContratoExtraido":
         if self.garantia_tipo == "fiador" and (not self.fiador_nome or not self.fiador_cpf):
             raise ValueError("garantia_tipo='fiador' requer fiador_nome e fiador_cpf preenchidos")
-        if self.garantia_tipo == "caucao" and self.garantia_valor is None:
-            raise ValueError("garantia_tipo='caucao' requer garantia_valor preenchido")
+        if self.garantia_tipo in ("caucao", "aluguel_antecipado") and self.garantia_valor is None:
+            raise ValueError(
+                f"garantia_tipo='{self.garantia_tipo}' requer garantia_valor preenchido"
+            )
         return self
 
     @model_validator(mode="after")

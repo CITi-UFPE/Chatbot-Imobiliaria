@@ -70,7 +70,7 @@ class DadosInquilino(BaseModel):
     data_termino: str
     indice_reajuste: Optional[Literal["igpm", "livre_negociacao"]] = None
     data_aniversario_reajuste: Optional[str] = None
-    garantia_tipo: Literal["fiador", "caucao"]
+    garantia_tipo: Literal["fiador", "caucao", "aluguel_antecipado"]
     garantia_valor: Optional[float] = None
     fiador_nome: Optional[str] = None
     multa_infracao_tipo: Literal["meses_aluguel", "percentual_valor_anual"]
