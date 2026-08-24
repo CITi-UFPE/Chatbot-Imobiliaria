@@ -1,10 +1,11 @@
 """Cliente centralizado da WhatsApp Cloud API (Meta) — Projeto Domingos.
 
-WA-01 (esta entrega): fundação — configuração, tipos, exceções e o kill
-switch (WHATSAPP_ENVIO_ATIVO). Os quatro fluxos HTTP completos (texto,
-template, botões, download de mídia) chegam em WA-02/WA-03; aqui só stubs
-públicos e documentados, que já respeitam o kill switch e a validação de
-configuração — nenhuma chamada de rede acontece nesta task.
+WA-01: fundação — configuração, tipos, exceções e o kill switch
+(WHATSAPP_ENVIO_ATIVO).
+WA-02 (esta entrega): transporte HTTP real de enviar_texto/enviar_template,
+com retry seletivo (tenacity) para falha de conexão/timeout/429/5xx, e
+NENHUM retry para erro permanente (4xx). enviar_botoes e baixar_midia
+continuam stub — chegam em WA-03.
 
 Pontos que hoje só logam (`app/agents/a2_cobranca/notificacao.py`,
 `app/agents/a5_escalonamento/notificacao.py`) serão migrados para este
@@ -15,7 +16,9 @@ import logging
 import os
 from typing import Optional
 
+import httpx
 from pydantic import BaseModel
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,15 @@ logger = logging.getLogger(__name__)
 # suficiente pra upload/download de mídia em rede instável. WA-02/WA-03
 # passam este valor ao client httpx.
 TIMEOUT_PADRAO_SEGUNDOS = 15.0
+
+# Política de retry (WA-02) — só para erro TRANSITÓRIO (WhatsAppTransientError):
+# falha de conexão/timeout, HTTP 429 ou 5xx. 3 tentativas no total (1 original
+# + 2 retries), backoff exponencial curto o bastante para não segurar demais
+# um BackgroundTask do webhook nem os crons do A2/A4/A5. Erro PERMANENTE
+# (4xx exceto 429) nunca entra aqui — propaga na primeira tentativa.
+_RETRY_MAX_TENTATIVAS = 3
+_RETRY_ESPERA_MULTIPLICADOR_SEGUNDOS = 0.5
+_RETRY_ESPERA_MAX_SEGUNDOS = 4.0
 
 # Fallback usado somente quando WHATSAPP_GRAPH_API_VERSION não está setada
 # no ambiente — a variável de ambiente tem SEMPRE prioridade (ver
@@ -235,10 +247,108 @@ def _log_operacao(operacao: str, telefone: Optional[str] = None, **detalhes: obj
 
 
 # ======================================================================
-# Stubs públicos — implementação HTTP completa chega em WA-02 (texto e
-# template) e WA-03 (botões e mídia). Todos já respeitam o kill switch:
-# com envio inativo, retornam simulado sem tentar rede.
+# Transporte HTTP (WA-02)
 # ======================================================================
+
+
+def _construir_client() -> httpx.Client:
+    """Fábrica do client httpx usado pelas chamadas deste módulo — criado
+    sob demanda a cada chamada, não um client global mutável (restrição da
+    WA-01). Isolado numa função própria só para os testes poderem trocar o
+    transport por um httpx.MockTransport via monkeypatch, sem precisar
+    mockar cada chamada individualmente."""
+    return httpx.Client(timeout=TIMEOUT_PADRAO_SEGUNDOS)
+
+
+def _normalizar_destino(telefone: str) -> str:
+    """Normalização MÍNIMA do destino pro campo 'to' do payload — só
+    dígitos, sem formatação de apresentação (+, espaços, parênteses,
+    hífen). NÃO resolve DDI/DDD/nono dígito nem gera variantes brasileiras
+    — isso é escopo da WA-07, na resolução de contrato por telefone; aqui o
+    número já chega pronto para ser usado como identificador do WhatsApp."""
+    digitos = "".join(c for c in telefone if c.isdigit())
+    if not digitos:
+        raise WhatsAppConteudoInvalidoError(f"Telefone inválido para envio: {telefone!r}")
+    return digitos
+
+
+def _resumo_erro_meta(resposta: httpx.Response) -> str:
+    """Extrai code/message do corpo de erro padrão da Meta
+    ({"error": {"message": ..., "code": ...}}) para a exceção/log ficarem
+    legíveis sem precisar despejar o corpo inteiro da resposta. Nunca inclui
+    header nem o access token — só o corpo JSON de erro, que é público (é o
+    que a própria Meta devolveu)."""
+    try:
+        corpo = resposta.json()
+    except ValueError:
+        return resposta.text[:200]
+    erro = corpo.get("error", {}) if isinstance(corpo, dict) else {}
+    if not erro:
+        return resposta.text[:200]
+    return f"code={erro.get('code')} message={erro.get('message')}"
+
+
+@retry(
+    retry=retry_if_exception_type(WhatsAppTransientError),
+    stop=stop_after_attempt(_RETRY_MAX_TENTATIVAS),
+    wait=wait_exponential(multiplier=_RETRY_ESPERA_MULTIPLICADOR_SEGUNDOS, max=_RETRY_ESPERA_MAX_SEGUNDOS),
+    reraise=True,
+)
+def _post_com_retry(url: str, payload: dict, headers: dict) -> httpx.Response:
+    """Uma tentativa de POST — decorada com retry seletivo: só
+    WhatsAppTransientError (falha de rede, 429, 5xx) é retentado, até
+    _RETRY_MAX_TENTATIVAS vezes com backoff exponencial. WhatsAppPermanentError
+    (4xx) propaga na primeira tentativa, sem retry."""
+    try:
+        with _construir_client() as client:
+            resposta = client.post(url, json=payload, headers=headers)
+    except httpx.RequestError as erro:
+        # Cobre timeout E falha de conexão — httpx.TimeoutException e
+        # httpx.TransportError são ambas subclasses de httpx.RequestError.
+        raise WhatsAppTransientError(f"Falha de rede ao chamar a Graph API: {erro}") from erro
+
+    if resposta.status_code == 429 or resposta.status_code >= 500:
+        raise WhatsAppTransientError(
+            f"Erro transitório da Meta (HTTP {resposta.status_code}): {_resumo_erro_meta(resposta)}"
+        )
+    if resposta.status_code >= 400:
+        raise WhatsAppPermanentError(
+            f"Erro permanente da Meta (HTTP {resposta.status_code}): {_resumo_erro_meta(resposta)}"
+        )
+    return resposta
+
+
+def _extrair_message_id(corpo: dict) -> Optional[str]:
+    mensagens = corpo.get("messages") or []
+    if not mensagens:
+        return None
+    return mensagens[0].get("id")
+
+
+def _enviar_mensagem(payload: dict, telefone: str, operacao: str, **detalhes_log: object) -> ResultadoEnvio:
+    """Caminho comum a enviar_texto/enviar_template depois que o payload já
+    está montado: chama a Graph API (com retry seletivo), extrai o
+    message_id da resposta e loga de forma segura. Levanta WhatsAppError se
+    a Meta responder 2xx sem um message_id reconhecível — resposta nesse
+    formato é inesperada, não deve ser tratada como sucesso silencioso."""
+    url = f"{montar_url_base()}/messages"
+    headers = _headers_autenticados()
+    resposta = _post_com_retry(url, payload, headers)
+
+    try:
+        corpo = resposta.json()
+    except ValueError as erro:
+        raise WhatsAppError(f"Resposta 2xx da Meta com corpo não-JSON para {operacao}.") from erro
+
+    message_id = _extrair_message_id(corpo)
+    if message_id is None:
+        raise WhatsAppError(
+            f"Resposta 2xx da Meta sem message_id reconhecível para {operacao} "
+            f"(telefone {mascarar_telefone(telefone)})."
+        )
+
+    _log_operacao(operacao, telefone, status=resposta.status_code, message_id=message_id, **detalhes_log)
+    return ResultadoEnvio(sucesso=True, simulado=False, message_id=message_id)
 
 
 def enviar_texto(telefone: str, texto: str) -> ResultadoEnvio:
@@ -246,18 +356,20 @@ def enviar_texto(telefone: str, texto: str) -> ResultadoEnvio:
     janela de 24h desde a última mensagem do destinatário — a decisão de
     quando usar texto vs. template é responsabilidade de quem chama (regra
     completa em WA-08), este cliente só transporta o que foi decidido.
-
-    Implementação HTTP completa: WA-02. Aqui, com envio ativo, valida
-    configuração e sinaliza que o transporte real ainda não existe — não
-    finge sucesso.
     """
     if not envio_ativo():
         _log_operacao("enviar_texto", telefone, simulado=True)
         return ResultadoEnvio(sucesso=True, simulado=True)
+
     validar_configuracao_envio_real()
-    raise NotImplementedError(
-        "enviar_texto: transporte HTTP real ainda não implementado (chega em WA-02)."
-    )
+    destino = _normalizar_destino(telefone)
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": destino,
+        "type": "text",
+        "text": {"body": texto},
+    }
+    return _enviar_mensagem(payload, telefone, operacao="enviar_texto")
 
 
 def enviar_template(
@@ -265,18 +377,31 @@ def enviar_template(
 ) -> ResultadoEnvio:
     """Envia uma mensagem de template pré-aprovado pela Meta — obrigatório
     fora da janela de 24h ou para mensagens proativas (cron de cobrança,
-    alertas do A4). `parametros` é posicional, na mesma ordem cadastrada no
-    template junto à Meta (catálogo formal: WA-09).
-
-    Implementação HTTP completa: WA-02.
+    alertas do A4). `parametros` é posicional, na MESMA ordem cadastrada no
+    template junto à Meta (catálogo formal: WA-09) — viram o componente
+    `body` da mensagem, um por variável `{{n}}` do template.
     """
     if not envio_ativo():
         _log_operacao("enviar_template", telefone, simulado=True, template=nome)
         return ResultadoEnvio(sucesso=True, simulado=True)
+
     validar_configuracao_envio_real()
-    raise NotImplementedError(
-        "enviar_template: transporte HTTP real ainda não implementado (chega em WA-02)."
-    )
+    destino = _normalizar_destino(telefone)
+    template: dict = {"name": nome, "language": {"code": lang}}
+    if parametros:
+        template["components"] = [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": parametro} for parametro in parametros],
+            }
+        ]
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": destino,
+        "type": "template",
+        "template": template,
+    }
+    return _enviar_mensagem(payload, telefone, operacao="enviar_template", template=nome)
 
 
 def enviar_botoes(telefone: str, corpo: str, botoes: list[dict]) -> ResultadoEnvio:
