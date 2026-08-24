@@ -2,10 +2,14 @@
 
 WA-01: fundação — configuração, tipos, exceções e o kill switch
 (WHATSAPP_ENVIO_ATIVO).
-WA-02 (esta entrega): transporte HTTP real de enviar_texto/enviar_template,
-com retry seletivo (tenacity) para falha de conexão/timeout/429/5xx, e
-NENHUM retry para erro permanente (4xx). enviar_botoes e baixar_midia
-continuam stub — chegam em WA-03.
+WA-02: transporte HTTP real de enviar_texto/enviar_template, com retry
+seletivo (tenacity) para falha de conexão/timeout/429/5xx, e NENHUM retry
+para erro permanente (4xx).
+WA-03 (esta entrega): enviar_botoes (mensagem interativa, 1-3 botões,
+validados ANTES de qualquer chamada HTTP) e baixar_midia (download real em
+duas etapas: metadados + arquivo, com MIME/tamanho validados e leitura em
+streaming com limite, pra nunca acumular um arquivo arbitrariamente grande
+inteiro na memória).
 
 Pontos que hoje só logam (`app/agents/a2_cobranca/notificacao.py`,
 `app/agents/a5_escalonamento/notificacao.py`) serão migrados para este
@@ -48,6 +52,23 @@ _GRAPH_API_VERSION_PADRAO = "v21.0"
 
 _VALORES_BOOLEANOS_VERDADEIROS = {"1", "true", "t", "yes", "y", "on"}
 _VALORES_BOOLEANOS_FALSOS = {"0", "false", "f", "no", "n", "off", ""}
+
+# Limites de um botão de interactive message impostos pela própria Meta
+# Cloud API (WA-03) — validados localmente ANTES de qualquer request, pra
+# nunca gastar uma chamada HTTP com um payload que a Meta rejeitaria de
+# qualquer forma.
+_MAX_BOTOES = 3
+_MAX_TITULO_BOTAO_CARACTERES = 20
+_MAX_ID_BOTAO_CARACTERES = 256
+
+# MIME permitidos para comprovante (imagens comuns + PDF) e tamanho máximo
+# de mídia aceito por download (WA-03) — configurável via
+# WHATSAPP_MIDIA_TAMANHO_MAXIMO_MB, com um padrão conservador. Ver
+# _tamanho_maximo_midia_bytes().
+_MIME_PERMITIDOS_COMPROVANTE = frozenset(
+    {"image/jpeg", "image/png", "image/webp", "application/pdf"}
+)
+_TAMANHO_MAXIMO_MIDIA_BYTES_PADRAO = 10 * 1024 * 1024  # 10 MB
 
 
 # ======================================================================
@@ -288,6 +309,21 @@ def _resumo_erro_meta(resposta: httpx.Response) -> str:
     return f"code={erro.get('code')} message={erro.get('message')}"
 
 
+def _classificar_resposta(resposta: httpx.Response) -> httpx.Response:
+    """Ponto único de decisão "isso é transitório, permanente, ou ok?" —
+    compartilhado entre POST (WA-02) e GET (WA-03) pra não duplicar a
+    classificação de status code em dois lugares."""
+    if resposta.status_code == 429 or resposta.status_code >= 500:
+        raise WhatsAppTransientError(
+            f"Erro transitório da Meta (HTTP {resposta.status_code}): {_resumo_erro_meta(resposta)}"
+        )
+    if resposta.status_code >= 400:
+        raise WhatsAppPermanentError(
+            f"Erro permanente da Meta (HTTP {resposta.status_code}): {_resumo_erro_meta(resposta)}"
+        )
+    return resposta
+
+
 @retry(
     retry=retry_if_exception_type(WhatsAppTransientError),
     stop=stop_after_attempt(_RETRY_MAX_TENTATIVAS),
@@ -306,16 +342,25 @@ def _post_com_retry(url: str, payload: dict, headers: dict) -> httpx.Response:
         # Cobre timeout E falha de conexão — httpx.TimeoutException e
         # httpx.TransportError são ambas subclasses de httpx.RequestError.
         raise WhatsAppTransientError(f"Falha de rede ao chamar a Graph API: {erro}") from erro
+    return _classificar_resposta(resposta)
 
-    if resposta.status_code == 429 or resposta.status_code >= 500:
-        raise WhatsAppTransientError(
-            f"Erro transitório da Meta (HTTP {resposta.status_code}): {_resumo_erro_meta(resposta)}"
-        )
-    if resposta.status_code >= 400:
-        raise WhatsAppPermanentError(
-            f"Erro permanente da Meta (HTTP {resposta.status_code}): {_resumo_erro_meta(resposta)}"
-        )
-    return resposta
+
+@retry(
+    retry=retry_if_exception_type(WhatsAppTransientError),
+    stop=stop_after_attempt(_RETRY_MAX_TENTATIVAS),
+    wait=wait_exponential(multiplier=_RETRY_ESPERA_MULTIPLICADOR_SEGUNDOS, max=_RETRY_ESPERA_MAX_SEGUNDOS),
+    reraise=True,
+)
+def _get_com_retry(url: str, headers: dict) -> httpx.Response:
+    """Mesma política de retry do POST (WA-02), usada pelo GET de metadados
+    de mídia (WA-03) — não pelo download do arquivo em si, que usa streaming
+    com limite de tamanho (ver _baixar_arquivo_com_limite)."""
+    try:
+        with _construir_client() as client:
+            resposta = client.get(url, headers=headers)
+    except httpx.RequestError as erro:
+        raise WhatsAppTransientError(f"Falha de rede ao chamar a Graph API: {erro}") from erro
+    return _classificar_resposta(resposta)
 
 
 def _extrair_message_id(corpo: dict) -> Optional[str]:
@@ -404,28 +449,135 @@ def enviar_template(
     return _enviar_mensagem(payload, telefone, operacao="enviar_template", template=nome)
 
 
+def _validar_botoes(botoes: list[dict]) -> None:
+    """Valida quantidade e formato dos botões ANTES de qualquer chamada
+    HTTP e independente do kill switch — entrada inválida é inválida mesmo
+    em modo simulado; não faz sentido "simular sucesso" pra um payload que
+    a Meta rejeitaria. Limites: 1 a 3 botões (Meta não aceita 0 nem mais de
+    3), título não vazio até 20 caracteres, id não vazio até 256
+    caracteres (mesmo limite assumido pelo formato de
+    app/agents/a2_cobranca/button_ids.py)."""
+    if not (1 <= len(botoes) <= _MAX_BOTOES):
+        raise WhatsAppConteudoInvalidoError(
+            f"enviar_botoes aceita de 1 a {_MAX_BOTOES} botões, recebido {len(botoes)}."
+        )
+    for indice, botao in enumerate(botoes):
+        titulo = botao.get("titulo") or ""
+        id_botao = botao.get("id") or ""
+        if not titulo:
+            raise WhatsAppConteudoInvalidoError(f"Botão {indice}: título vazio.")
+        if len(titulo) > _MAX_TITULO_BOTAO_CARACTERES:
+            raise WhatsAppConteudoInvalidoError(
+                f"Botão {indice}: título com {len(titulo)} caracteres, "
+                f"máximo {_MAX_TITULO_BOTAO_CARACTERES}."
+            )
+        if not id_botao:
+            raise WhatsAppConteudoInvalidoError(f"Botão {indice}: id vazio.")
+        if len(id_botao) > _MAX_ID_BOTAO_CARACTERES:
+            raise WhatsAppConteudoInvalidoError(
+                f"Botão {indice}: id com {len(id_botao)} caracteres, "
+                f"máximo {_MAX_ID_BOTAO_CARACTERES}."
+            )
+
+
 def enviar_botoes(telefone: str, corpo: str, botoes: list[dict]) -> ResultadoEnvio:
     """Envia mensagem interativa com até 3 botões nativos (ex: confirmação
     de comprovante do A2 — ver `app/agents/a2_cobranca/button_ids.py` para
-    como os IDs são montados/decodificados). `botoes` no formato
-    `[{"id": ..., "titulo": ...}, ...]`; validação de quantidade/tamanho
-    entra em WA-03, antes de qualquer chamada HTTP.
-
-    Implementação HTTP completa: WA-03.
+    como os IDs são montados/decodificados, este cliente só transporta IDs
+    já prontos, nunca monta ID de negócio). `botoes` no formato
+    `[{"id": ..., "titulo": ...}, ...]`.
     """
+    _validar_botoes(botoes)
+
     if not envio_ativo():
         _log_operacao("enviar_botoes", telefone, simulado=True, n_botoes=len(botoes))
         return ResultadoEnvio(sucesso=True, simulado=True)
+
     validar_configuracao_envio_real()
-    raise NotImplementedError(
-        "enviar_botoes: transporte HTTP real ainda não implementado (chega em WA-03)."
-    )
+    destino = _normalizar_destino(telefone)
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": destino,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": corpo},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": botao["id"], "title": botao["titulo"]}}
+                    for botao in botoes
+                ]
+            },
+        },
+    }
+    return _enviar_mensagem(payload, telefone, operacao="enviar_botoes", n_botoes=len(botoes))
+
+
+def _tamanho_maximo_midia_bytes() -> int:
+    """Limite de tamanho de mídia aceito, configurável via
+    WHATSAPP_MIDIA_TAMANHO_MAXIMO_MB (float, em megabytes). Valor ausente ou
+    não numérico cai no padrão conservador (10 MB) — nunca lança."""
+    valor = os.environ.get("WHATSAPP_MIDIA_TAMANHO_MAXIMO_MB")
+    if not valor:
+        return _TAMANHO_MAXIMO_MIDIA_BYTES_PADRAO
+    try:
+        megabytes = float(valor)
+    except ValueError:
+        logger.warning(
+            "WHATSAPP_MIDIA_TAMANHO_MAXIMO_MB=%r inválido — usando padrão (%s bytes).",
+            valor,
+            _TAMANHO_MAXIMO_MIDIA_BYTES_PADRAO,
+        )
+        return _TAMANHO_MAXIMO_MIDIA_BYTES_PADRAO
+    return int(megabytes * 1024 * 1024)
+
+
+@retry(
+    retry=retry_if_exception_type(WhatsAppTransientError),
+    stop=stop_after_attempt(_RETRY_MAX_TENTATIVAS),
+    wait=wait_exponential(multiplier=_RETRY_ESPERA_MULTIPLICADOR_SEGUNDOS, max=_RETRY_ESPERA_MAX_SEGUNDOS),
+    reraise=True,
+)
+def _baixar_arquivo_com_limite(url: str, headers: dict, limite_bytes: int) -> bytes:
+    """Segunda etapa do download — GET em streaming, abortando assim que o
+    total acumulado ultrapassa limite_bytes, pra nunca carregar um arquivo
+    arbitrariamente grande inteiro na memória só para descobrir depois que
+    ele deveria ter sido rejeitado. Mesma política de retry das outras
+    chamadas (WA-02): se falhar por rede/429/5xx, a tentativa INTEIRA é
+    refeita do zero (sem retomar de onde parou — simplicidade sobre
+    otimização, comprovantes não passam de poucos MB)."""
+    try:
+        with _construir_client() as client:
+            with client.stream("GET", url, headers=headers) as resposta:
+                if resposta.status_code >= 400:
+                    # Corpo de erro da Meta é pequeno — seguro materializar
+                    # inteiro só nesse caminho, pra poder classificar/logar
+                    # com _resumo_erro_meta (que precisa de .json()/.text,
+                    # indisponíveis num Response ainda em streaming).
+                    resposta.read()
+                    _classificar_resposta(resposta)
+
+                total = 0
+                pedacos: list[bytes] = []
+                for pedaco in resposta.iter_bytes():
+                    total += len(pedaco)
+                    if total > limite_bytes:
+                        raise WhatsAppConteudoInvalidoError(
+                            f"Mídia excede o tamanho máximo permitido ({limite_bytes} bytes) "
+                            "durante o download."
+                        )
+                    pedacos.append(pedaco)
+    except httpx.RequestError as erro:
+        raise WhatsAppTransientError(f"Falha de rede ao baixar mídia: {erro}") from erro
+    return b"".join(pedacos)
 
 
 def baixar_midia(media_id: str) -> ResultadoMidia:
     """Baixa um arquivo de mídia (comprovante) da Meta em duas etapas: (1)
-    GET /{media_id} na Graph API para resolver a URL assinada e temporária
-    do arquivo, (2) GET nessa URL para os bytes reais.
+    GET /{media_id} na Graph API para resolver a URL assinada/temporária do
+    arquivo e o mime_type declarado, (2) GET nessa URL, em streaming, para
+    os bytes reais — com corte automático se ultrapassar o limite de
+    tamanho configurado.
 
     Decisão de design: NÃO respeita o kill switch. Diferente de
     enviar_texto/enviar_template/enviar_botoes (que são ENVIOS, bloqueados
@@ -434,10 +586,50 @@ def baixar_midia(media_id: str) -> ResultadoMidia:
     envio não deveria impedir o A2 de processar um comprovante já
     recebido. Ainda assim exige configuração válida (validar_configuracao_
     envio_real), porque a chamada é real e usa o mesmo access token.
-
-    Implementação HTTP completa: WA-03.
     """
     validar_configuracao_envio_real()
-    raise NotImplementedError(
-        "baixar_midia: transporte HTTP real ainda não implementado (chega em WA-03)."
+    if not media_id:
+        raise WhatsAppConteudoInvalidoError("media_id vazio.")
+
+    headers = _headers_autenticados()
+    limite_bytes = _tamanho_maximo_midia_bytes()
+
+    url_metadados = f"{montar_url_graph_api()}/{media_id}"
+    resposta_metadados = _get_com_retry(url_metadados, headers)
+    try:
+        metadados = resposta_metadados.json()
+    except ValueError as erro:
+        raise WhatsAppError(
+            f"Metadados de mídia com corpo não-JSON para media_id={media_id!r}."
+        ) from erro
+
+    url_arquivo = metadados.get("url")
+    mime_type = metadados.get("mime_type", "application/octet-stream")
+    tamanho_informado = metadados.get("file_size")
+
+    if not url_arquivo:
+        raise WhatsAppError(f"Metadados de mídia sem URL assinada para media_id={media_id!r}.")
+    # Defensivo: a URL vem de uma resposta autenticada da própria Meta, mas
+    # ainda assim recusamos qualquer coisa que não seja https antes de
+    # fazer um segundo GET nela — nunca aceitar "URL inesperada" às cegas
+    # (restrição explícita da WA-03).
+    if not url_arquivo.startswith("https://"):
+        raise WhatsAppError(f"URL de mídia inesperada (não-https) para media_id={media_id!r}.")
+    if mime_type not in _MIME_PERMITIDOS_COMPROVANTE:
+        raise WhatsAppConteudoInvalidoError(f"MIME não permitido para comprovante: {mime_type!r}.")
+    if tamanho_informado is not None:
+        try:
+            if int(tamanho_informado) > limite_bytes:
+                raise WhatsAppConteudoInvalidoError(
+                    f"Mídia excede o tamanho máximo permitido ({limite_bytes} bytes): "
+                    f"{tamanho_informado} bytes informados nos metadados."
+                )
+        except (TypeError, ValueError):
+            pass  # file_size malformado — segue pro corte real durante o download
+
+    conteudo = _baixar_arquivo_com_limite(url_arquivo, headers, limite_bytes)
+
+    _log_operacao(
+        "baixar_midia", telefone=None, media_id=media_id, mime_type=mime_type, bytes=len(conteudo)
     )
+    return ResultadoMidia(conteudo=conteudo, mime_type=mime_type)

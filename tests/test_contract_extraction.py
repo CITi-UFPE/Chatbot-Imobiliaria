@@ -37,9 +37,21 @@ def _payload_valido():
     }
 
 
+def _usage_fake():
+    """extrair_dados_contrato loga response.usage.input_tokens/output_tokens
+    logo depois de obter a resposta, ANTES de qualquer checagem de
+    stop_reason — todo fake de resposta precisa desse atributo, mesmo os
+    que representam erro (refusal, sem tool_use etc.), senão o log de uso
+    de tokens quebra com AttributeError antes mesmo de chegar na lógica que
+    o teste quer exercitar."""
+    return SimpleNamespace(input_tokens=1000, output_tokens=500)
+
+
 def _resposta_com_tool_use(entrada: dict, stop_reason: str = "tool_use"):
     bloco = SimpleNamespace(type="tool_use", input=entrada)
-    return SimpleNamespace(stop_reason=stop_reason, stop_details=None, content=[bloco])
+    return SimpleNamespace(
+        stop_reason=stop_reason, stop_details=None, content=[bloco], usage=_usage_fake()
+    )
 
 
 def _mock_stream(resposta):
@@ -119,7 +131,9 @@ class TestExtrairDadosContrato:
         mock_path_cls.return_value.read_bytes.return_value = b"%PDF-fake"
         mock_client = MagicMock()
         mock_client.messages.stream.return_value = _mock_stream(
-            SimpleNamespace(stop_reason="refusal", stop_details="motivo x", content=[])
+            SimpleNamespace(
+                stop_reason="refusal", stop_details="motivo x", content=[], usage=_usage_fake()
+            )
         )
         mock_anthropic_cls.return_value = mock_client
 
@@ -132,7 +146,9 @@ class TestExtrairDadosContrato:
         mock_path_cls.return_value.read_bytes.return_value = b"%PDF-fake"
         mock_client = MagicMock()
         mock_client.messages.stream.return_value = _mock_stream(
-            SimpleNamespace(stop_reason="end_turn", stop_details=None, content=[])
+            SimpleNamespace(
+                stop_reason="end_turn", stop_details=None, content=[], usage=_usage_fake()
+            )
         )
         mock_anthropic_cls.return_value = mock_client
 
