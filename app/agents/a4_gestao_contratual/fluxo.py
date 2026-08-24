@@ -36,8 +36,23 @@ Cada contrato (e cada item da aplicação de reajuste / finalização de
 contrato) é processado isoladamente: um erro num contrato (ex: API do Banco
 Central fora do ar) não pode impedir que os demais contratos ativos sejam
 verificados no mesmo dia.
+
+WA-09: alerta de renovação (Fluxo A) e cálculo de reajuste (Fluxo B) agora
+também são TRANSPORTADOS por WhatsApp — não só registrados no banco e
+devolvidos no resultado estruturado. IMPORTANTE: o texto de
+montar_alerta_renovacao/montar_calculo_reajuste (mensagens_gestao_contratual.py)
+é dirigido À EQUIPE (menciona @Domingos/@Fernanda pelo nome, pede pra ELES
+decidirem sobre renovação/reajuste) — não é uma mensagem pro inquilino, e
+NÃO deve ir pro telefone_whatsapp do contrato. O transporte vai pro
+WHATSAPP_STAFF_PHONE_NUMBER (novo, .env.example), via template
+`alerta_contratual` (catálogo: docs/whatsapp/templates-meta.md). Ver
+_notificar_staff_alerta_contratual abaixo — registro do alerta no banco
+(registrar_alerta_renovacao_fn/registrar_calculo_reajuste_fn) sempre
+acontece ANTES do transporte e nunca é desfeito se o transporte falhar
+(separação explícita entre "gerar/registrar o alerta" e "transportá-lo").
 """
 
+import logging
 import os
 from datetime import date, datetime
 from typing import Callable, Optional
@@ -47,6 +62,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field
 
 from app.models.contract_alerts import ContratoParaAlerta
+from app.tools import whatsapp_client
 from app.tools.calculo_reajuste import (
     INDICES_COM_CALCULO_AUTOMATICO,
     calcular_periodo_contrato_meses,
@@ -70,10 +86,46 @@ from app.tools.contract_alerts_client import (
 from app.tools.indice_reajuste_client import buscar_percentual_acumulado_12_meses
 from app.tools.mensagens_gestao_contratual import montar_alerta_renovacao, montar_calculo_reajuste
 
+logger = logging.getLogger(__name__)
+
 # tipo_renovacao que dependem de decisão da gestora até data_termino
 # (Migration 016) — os demais (novo_contrato, indeterminado_por_lei) têm
 # caminho próprio no dispatcher abaixo, sem passar por pendência.
 _TIPOS_RENOVACAO_ACIONAVEIS = ("requer_aditivo", "automatica", "nao_identificado")
+
+# WA-09 — template único (catálogo: docs/whatsapp/templates-meta.md) usado
+# tanto pro alerta de renovação quanto pro cálculo de reajuste; o rótulo no
+# primeiro parâmetro é o que diferencia os dois no corpo da mensagem.
+_TEMPLATE_ALERTA_CONTRATUAL = "alerta_contratual"
+_LABEL_RENOVACAO = "Renovação de contrato"
+_LABEL_REAJUSTE = "Reajuste de aluguel"
+
+
+def _telefone_staff() -> str:
+    valor = os.environ.get("WHATSAPP_STAFF_PHONE_NUMBER")
+    if not valor:
+        raise RuntimeError(
+            "WHATSAPP_STAFF_PHONE_NUMBER não configurado — não é possível transportar "
+            "o alerta de gestão contratual (envio está ativo, mas falta o destino)."
+        )
+    return valor
+
+
+def _notificar_staff_alerta_contratual(tipo_label: str, mensagem: str) -> Optional[str]:
+    """Implementação PADRÃO de enviar_notificacao_fn (injetável em
+    processar_alerta_renovacao/processar_calculo_reajuste, ver abaixo) — só
+    checa WHATSAPP_STAFF_PHONE_NUMBER quando o envio está de fato ativo
+    (whatsapp_client.envio_ativo()). Com o kill switch desligado (padrão em
+    dev/teste, quando nenhuma variável de WhatsApp costuma estar
+    configurada), nem chega a exigir essa variável — devolve None sem
+    nenhum efeito colateral, pra não quebrar ambiente/teste que não
+    configura nada de WhatsApp. Devolve o message_id em caso de envio real,
+    ou None em modo simulado."""
+    if not whatsapp_client.envio_ativo():
+        return None
+    destino = _telefone_staff()
+    resultado = whatsapp_client.enviar_template(destino, _TEMPLATE_ALERTA_CONTRATUAL, [tipo_label, mensagem])
+    return resultado.message_id
 
 
 class ResultadoExecucaoAlertas(BaseModel):
@@ -102,6 +154,7 @@ def processar_alerta_renovacao(
     hoje: date,
     *,
     registrar_alerta_renovacao_fn: Callable[[UUID, date], bool],
+    enviar_notificacao_fn: Callable[[str, str], Optional[str]] = _notificar_staff_alerta_contratual,
 ) -> Optional[str]:
     # Contratos de prazo indeterminado (ex: cláusula de renovação por
     # inércia, ou já transicionados por indeterminado_por_lei) não têm mais
@@ -128,6 +181,12 @@ def processar_alerta_renovacao(
     if not registrar_alerta_renovacao_fn(contrato.id, hoje):
         return None  # já disparado hoje — job rodou 2x, não reenviar
 
+    # Transporte é SEPARADO do registro (WA-09): a linha acima já gravou o
+    # alerta de negócio — se o envio abaixo falhar, propaga (o chamador,
+    # executar_alertas_contratuais, isola por contrato e registra em
+    # resultado.erros), mas o registro já feito não é desfeito.
+    enviar_notificacao_fn(_LABEL_RENOVACAO, mensagem)
+
     return mensagem
 
 
@@ -138,6 +197,7 @@ def processar_calculo_reajuste(
     buscar_percentual_fn: Callable[[str], float],
     registrar_calculo_reajuste_fn: Callable[[UUID, date, float, float], bool],
     listar_clausulas_fn: Callable[[UUID], list[tuple[str, str]]],
+    enviar_notificacao_fn: Callable[[str, str], Optional[str]] = _notificar_staff_alerta_contratual,
 ) -> Optional[str]:
     if contrato.indice_reajuste not in INDICES_COM_CALCULO_AUTOMATICO:
         return None
@@ -170,6 +230,9 @@ def processar_calculo_reajuste(
 
     if not registrar_calculo_reajuste_fn(contrato.id, hoje, percentual, valor_reajustado):
         return None  # já disparado hoje
+
+    # Mesma separação registro/transporte de processar_alerta_renovacao acima.
+    enviar_notificacao_fn(_LABEL_REAJUSTE, mensagem)
 
     return mensagem
 
