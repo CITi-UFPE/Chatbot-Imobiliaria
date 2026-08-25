@@ -7,15 +7,29 @@ de um botão de interactive message. Múltiplos charge_id (caso combinado)
 vão separados por vírgula.
 
 Este módulo junta as duas pontas (montar E decodificar) de propósito: quem
-for implementar o ENVIO real da interactive message (ainda não existe — ver
-notificacao.py, que só loga por enquanto) precisa montar o `id` de cada
-botão usando exatamente as funções `montar_button_id_*` daqui, senão o lado
-do webhook (decodificar_button_id, usado em
-app/orchestrator/processar_mensagem.py) não reconhece o clique.
+for implementar o ENVIO real da interactive message precisa montar o `id`
+de cada botão usando exatamente as funções `montar_button_id_*` daqui,
+senão o lado do webhook (decodificar_button_id, usado em
+app/orchestrator/orchestrator.py::rotear_clique_botao_a2) não reconhece o
+clique.
 
 decodificar_button_id nunca lança — devolve None pra qualquer coisa que não
 reconheça, porque um clique de botão que chega maltormado não pode virar uma
 exceção não tratada no meio do processamento do webhook.
+
+Pagamento combinado parcial ("Só uma delas") — fluxo em DUAS etapas, porque
+um clique sozinho nunca diz QUAL charge foi de fato paga:
+
+  1. ACAO_ESCOLHER_PARCIAL: primeiro clique ("Só uma delas" na mensagem
+     original de pagamento combinado). Carrega só contract_id + TODAS as
+     charge_ids envolvidas — ainda não sabe qual foi paga. Decodificado,
+     dispara uma SEGUNDA mensagem com um botão por charge (ver
+     app/agents/a2_cobranca/comprovante.py::iniciar_escolha_pagamento_parcial
+     e notificacao.py::notificar_pergunta_qual_charge_paga).
+  2. ACAO_COMBINADO_PARCIAL: segundo clique, um por charge possível (ex:
+     "Aluguel" / "Água"). O charge_id do botão clicado vem SEMPRE primeiro
+     na lista de charge_ids; os demais (que voltam pra 'pendente') vêm
+     depois — convenção que montar_button_id_combinado_parcial já garante.
 """
 
 from dataclasses import dataclass
@@ -24,17 +38,18 @@ from typing import Optional
 ACAO_CONFIRMAR = "confirmar"
 ACAO_DIVERGENTE = "divergente"
 ACAO_COMBINADO_TODOS = "combinado_todos"
-
-# "Só uma delas" (pagamento combinado parcial) de propósito NÃO tem suporte
-# de decodificação aqui. Ver app/agents/a2_cobranca/comprovante.py,
-# docstring de marcar_apenas_uma_paga: um clique de botão sozinho não diz
-# QUAL das charges foi de fato paga — falta uma interação adicional
-# (provavelmente uma lista de opções ou resposta de texto) que ainda não foi
-# desenhada. A constante existe só pra reservar o nome/valor, não pra ser
-# produzida ou aceita por este módulo ainda — ver decodificar_button_id.
+ACAO_ESCOLHER_PARCIAL = "escolher_parcial"
 ACAO_COMBINADO_PARCIAL = "combinado_parcial"
 
-_ACOES_DECODIFICAVEIS = frozenset({ACAO_CONFIRMAR, ACAO_DIVERGENTE, ACAO_COMBINADO_TODOS})
+_ACOES_DECODIFICAVEIS = frozenset(
+    {
+        ACAO_CONFIRMAR,
+        ACAO_DIVERGENTE,
+        ACAO_COMBINADO_TODOS,
+        ACAO_ESCOLHER_PARCIAL,
+        ACAO_COMBINADO_PARCIAL,
+    }
+)
 
 _SEPARADOR_CAMPO = "|"
 _SEPARADOR_LISTA = ","
@@ -54,6 +69,25 @@ def montar_button_id_combinado_todos(contract_id: str, charge_ids: list[str]) ->
     )
 
 
+def montar_button_id_escolher_parcial(contract_id: str, charge_ids: list[str]) -> str:
+    """Botão "Só uma delas" (1ª etapa) — ainda não sabe qual charge foi
+    paga, só sabe quais estão em jogo. Ver docstring do módulo."""
+    return _SEPARADOR_CAMPO.join(
+        [ACAO_ESCOLHER_PARCIAL, contract_id, _SEPARADOR_LISTA.join(charge_ids)]
+    )
+
+
+def montar_button_id_combinado_parcial(
+    contract_id: str, charge_id_paga: str, charge_ids_restantes: list[str]
+) -> str:
+    """Botão de UMA charge específica na 2ª etapa (ex: "Aluguel"). O
+    charge_id_paga sempre vai PRIMEIRO na lista codificada — é assim que
+    decodificar_button_id sabe distinguir "a que foi paga" das "que voltam
+    pra pendente" sem precisar de um separador a mais no formato."""
+    todos = [charge_id_paga, *charge_ids_restantes]
+    return _SEPARADOR_CAMPO.join([ACAO_COMBINADO_PARCIAL, contract_id, _SEPARADOR_LISTA.join(todos)])
+
+
 @dataclass
 class ButtonIdDecodificado:
     acao: str
@@ -62,10 +96,10 @@ class ButtonIdDecodificado:
 
 
 def decodificar_button_id(button_id: str) -> Optional[ButtonIdDecodificado]:
-    """None se o formato não for reconhecido (veio de um botão antigo,
-    corrompido, ou de combinado_parcial — ainda sem suporte). Quem chama
-    deve tratar None como "não consigo processar este clique
-    automaticamente, precisa de intervenção manual", nunca como erro fatal."""
+    """None se o formato não for reconhecido (veio de um botão antigo ou
+    corrompido). Quem chama deve tratar None como "não consigo processar
+    este clique automaticamente, precisa de intervenção manual", nunca
+    como erro fatal."""
     if not button_id:
         return None
 

@@ -55,9 +55,11 @@ from typing import Optional
 from app.agents.a1_atendimento import responder_inquilino
 from app.agents.a2_cobranca import EntradaA2, TipoEntradaA2, pausar_charges_em_negociacao, processar_entrada_a2
 from app.agents.a2_cobranca.button_ids import (
+    ACAO_COMBINADO_PARCIAL,
     ACAO_COMBINADO_TODOS,
     ACAO_CONFIRMAR,
     ACAO_DIVERGENTE,
+    ACAO_ESCOLHER_PARCIAL,
     decodificar_button_id,
 )
 from app.agents.a3_manutencao import responder_manutencao
@@ -251,15 +253,18 @@ def rotear_comprovante_a2(
     return _RESPOSTA_A2_COMPROVANTE_RECEBIDO, "A2"
 
 
-def rotear_clique_botao_a2(button_id: str) -> str:
+def rotear_clique_botao_a2(button_id: str, telefone_remetente: str) -> str:
     """Chamado direto por app/orchestrator/processar_mensagem.py quando a
     mensagem recebida é um clique de botão interativo. Diferente de todo o
     resto deste módulo: quem clicou é a FERNANDA (staff), não um inquilino
-    numa conversa de contrato — por isso não recebe contract_id como
-    parâmetro (não existe telefone de inquilino pra resolver aqui) e não
-    passa por agent_log_message (isso é uma ação administrativa, não uma
-    mensagem de conversa). contract_id/charge_id(s) vêm decodificados do
-    próprio button_id — ver app/agents/a2_cobranca/button_ids.py.
+    numa conversa de contrato — por isso não passa por agent_log_message
+    (isso é uma ação administrativa, não uma mensagem de conversa).
+    contract_id/charge_id(s) vêm decodificados do próprio button_id — ver
+    app/agents/a2_cobranca/button_ids.py. `telefone_remetente` (o telefone
+    de quem clicou) só é usado pela ação ESCOLHER_PAGAMENTO_PARCIAL (WA-06,
+    1ª etapa do fluxo de pagamento combinado parcial), pra mandar a
+    pergunta "qual foi paga" de volta pra ela — as demais ações nunca
+    respondem a quem clicou, só ao inquilino (ver comprovante.py).
 
     Devolve só um texto curto (log/debug), não uma resposta de chat."""
     decodificado = decodificar_button_id(button_id)
@@ -297,11 +302,33 @@ def rotear_clique_botao_a2(button_id: str) -> str:
                 )
             )
             return "Pagamento combinado confirmado — todas as cobranças envolvidas foram quitadas."
+
+        if decodificado.acao == ACAO_ESCOLHER_PARCIAL:
+            processar_entrada_a2(
+                EntradaA2(
+                    tipo_entrada=TipoEntradaA2.ESCOLHER_PAGAMENTO_PARCIAL,
+                    contract_id=decodificado.contract_id,
+                    charge_ids=decodificado.charge_ids,
+                    telefone_remetente=telefone_remetente,
+                )
+            )
+            return "Pergunta enviada: qual cobrança foi paga."
+
+        if decodificado.acao == ACAO_COMBINADO_PARCIAL:
+            charge_id_paga, *charge_ids_restantes = decodificado.charge_ids
+            processar_entrada_a2(
+                EntradaA2(
+                    tipo_entrada=TipoEntradaA2.PAGAMENTO_COMBINADO_PARCIAL,
+                    contract_id=decodificado.contract_id,
+                    charge_id_paga=charge_id_paga,
+                    charge_ids_restantes=charge_ids_restantes,
+                )
+            )
+            return "Pagamento parcial confirmado — cobrança paga marcada, demais voltaram para pendente."
     except Exception:
         logger.exception("Falha ao processar clique de botão do A2: %r", button_id)
         return "Tive um problema para registrar essa ação — verifique manualmente no banco."
 
-    # Inalcançável: decodificar_button_id já filtra pra só as 3 ações acima
-    # (ACAO_COMBINADO_PARCIAL nunca é decodificado — ver button_ids.py).
-    # Mantido por defesa em profundidade.
+    # Inalcançável: decodificar_button_id já filtra pra só as ações
+    # reconhecidas acima. Mantido por defesa em profundidade.
     return "Ação reconhecida mas ainda não implementada."

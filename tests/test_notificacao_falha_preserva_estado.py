@@ -1,19 +1,29 @@
-"""Regressão dos achados do code-review na WA-05: em app/agents/a2_cobranca/
-cobranca.py e app/agents/a5_escalonamento/escalonamento.py, a gravação no
+"""Regressão dos achados do code-review na WA-05/WA-06: em
+app/agents/a2_cobranca/cobranca.py, app/agents/a5_escalonamento/
+escalonamento.py e app/agents/a2_cobranca/comprovante.py, a gravação no
 banco acontecia ANTES do aviso por WhatsApp, mas se o aviso falhasse a
 exceção subia e "apagava" o efeito da gravação aos olhos de quem chamou —
 mesmo o dado já estando salvo de verdade. Estes testes fixam o
 comportamento corrigido: falha de transporte é logada, mas nunca desfaz
 nem esconde um efeito de negócio que já aconteceu.
 
+O caso de comprovante.py (TestResolverChargeENotificarSobreviveAFalha
+abaixo) foi encontrado no code-review da WA-06 e ficou pendente até agora
+— era explicitamente citado na docstring de _resolver_charge_e_notificar
+como "mesmo padrão do achado já corrigido" nos outros dois módulos, mas
+nunca tinha sido corrigido ali de fato.
+
 Só mocka a camada que fala com o Supabase (obter_client_agente /
 obter_client_cron_batch) e o transporte de WhatsApp (enviar_mensagem_cobranca
-/ notificar_staff) — mesmo padrão de tests/testar_a2_manual.py.
+/ notificar_staff / notificar_fernanda_*) — mesmo padrão de
+tests/testar_a2_manual.py.
 """
 
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
+from app.agents.a2_cobranca.comprovante import _resolver_charge_e_notificar
+from app.agents.a2_cobranca.schemas import ComprovanteExtraido
 from app.agents.a5_escalonamento.escalonamento import AvaliacaoEscalonamento, executar_escalonamento
 
 HOJE = date(2026, 7, 17)
@@ -192,3 +202,112 @@ class TestExecutarEscalonamentoSobreviveAFalhaDeNotificacao:
         assert protocolo == "ESC-2026-00043"
         assert len(chamadas_staff) == 1
         assert "ESC-2026-00043" in chamadas_staff[0]
+
+
+class TestResolverChargeENotificarSobreviveAFalha:
+    """comprovante.py::_resolver_charge_e_notificar — Caso A, B.a e B.b são
+    os três ramos em que _marcar_aguardando_confirmacao (grava no banco)
+    roda ANTES do notificar_fernanda_*. Uma falha de transporte não pode
+    apagar, aos olhos de quem chama, o fato de que a charge já mudou de
+    status de verdade."""
+
+    CONTRACT_ID = "44444444-4444-4444-4444-444444444444"
+    DADOS_CONTRATO = {"inquilino_nome": "João Pereira", "imovel_identificacao": "Apto 305"}
+    EXTRAIDO = ComprovanteExtraido(valor_identificado=2200.0, data_identificada="2026-07-15", legivel=True)
+
+    def _client_fake(self, charges_abertas: list, updates: list) -> MagicMock:
+        client = MagicMock()
+
+        def _rpc(nome, params):
+            builder = MagicMock()
+            if nome == "agent_update_charge_status":
+                updates.append(params)
+                builder.execute.return_value = MagicMock(data=None)
+            else:
+                raise AssertionError(f"RPC não mockada neste teste: {nome}")
+            return builder
+
+        client.rpc.side_effect = _rpc
+        client.table.return_value.select.return_value.eq.return_value.in_.return_value.execute.return_value = MagicMock(
+            data=charges_abertas
+        )
+        return client
+
+    def test_caso_a_falha_ao_notificar_nao_apaga_o_update_ja_feito(self):
+        charges_abertas = [{"id": "charge-unica", "tipo": "aluguel", "valor_esperado": 2200.0}]
+        updates: list = []
+        client_fake = self._client_fake(charges_abertas, updates)
+
+        with patch(
+            "app.agents.a2_cobranca.comprovante.notificar_fernanda_comprovante",
+            side_effect=RuntimeError("Meta fora do ar"),
+        ):
+            _resolver_charge_e_notificar(
+                client_fake, self.CONTRACT_ID, self.EXTRAIDO, self.DADOS_CONTRATO
+            )  # não deve levantar
+
+        assert len(updates) == 1
+        assert updates[0]["p_charge_id"] == "charge-unica"
+        assert updates[0]["p_status"] == "aguardando_confirmacao"
+
+    def test_caso_ba_falha_ao_notificar_nao_apaga_o_update_ja_feito(self):
+        charges_abertas = [
+            {"id": "charge-aluguel", "tipo": "aluguel", "valor_esperado": 2200.0},
+            {"id": "charge-agua", "tipo": "agua", "valor_esperado": 95.0},
+        ]
+        updates: list = []
+        client_fake = self._client_fake(charges_abertas, updates)
+
+        with patch(
+            "app.agents.a2_cobranca.comprovante.notificar_fernanda_comprovante",
+            side_effect=RuntimeError("Meta fora do ar"),
+        ):
+            _resolver_charge_e_notificar(
+                client_fake, self.CONTRACT_ID, self.EXTRAIDO, self.DADOS_CONTRATO
+            )  # não deve levantar
+
+        assert len(updates) == 1
+        assert updates[0]["p_charge_id"] == "charge-aluguel"
+        assert updates[0]["p_status"] == "aguardando_confirmacao"
+
+    def test_caso_bb_falha_ao_notificar_nao_apaga_os_updates_ja_feitos(self):
+        charges_abertas = [
+            {"id": "charge-aluguel", "tipo": "aluguel", "valor_esperado": 2200.0},
+            {"id": "charge-agua", "tipo": "agua", "valor_esperado": 100.0},
+        ]
+        extraido_soma = ComprovanteExtraido(
+            valor_identificado=2300.0, data_identificada="2026-07-17", legivel=True
+        )
+        updates: list = []
+        client_fake = self._client_fake(charges_abertas, updates)
+
+        with patch(
+            "app.agents.a2_cobranca.comprovante.notificar_fernanda_pagamento_combinado",
+            side_effect=RuntimeError("Meta fora do ar"),
+        ):
+            _resolver_charge_e_notificar(
+                client_fake, self.CONTRACT_ID, extraido_soma, self.DADOS_CONTRATO
+            )  # não deve levantar
+
+        assert len(updates) == 2
+        assert {u["p_charge_id"] for u in updates} == {"charge-aluguel", "charge-agua"}
+        assert all(u["p_status"] == "aguardando_confirmacao" for u in updates)
+
+    def test_sucesso_ao_notificar_continua_funcionando_normalmente(self):
+        """Regressão de compatibilidade: sem falha nenhuma, o comportamento
+        continua o mesmo de antes — update gravado e notificação chamada."""
+        charges_abertas = [{"id": "charge-unica", "tipo": "aluguel", "valor_esperado": 2200.0}]
+        updates: list = []
+        client_fake = self._client_fake(charges_abertas, updates)
+        chamadas_notificacao: list = []
+
+        with patch(
+            "app.agents.a2_cobranca.comprovante.notificar_fernanda_comprovante",
+            side_effect=lambda *a, **k: chamadas_notificacao.append((a, k)),
+        ):
+            _resolver_charge_e_notificar(
+                client_fake, self.CONTRACT_ID, self.EXTRAIDO, self.DADOS_CONTRATO
+            )
+
+        assert len(updates) == 1
+        assert len(chamadas_notificacao) == 1

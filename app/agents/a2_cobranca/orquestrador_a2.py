@@ -2,10 +2,12 @@
 
 Ponto de entrada ÚNICO que o orquestrador geral deve chamar para qualquer
 interação (reativa a mensagem/webhook) que pertença ao A2. O orquestrador
-geral não precisa conhecer os detalhes internos do A2 (que hoje tem 3
-fluxos bem diferentes: comprovante por visão, confirmação por botão,
-divergência por botão) — só precisa montar um `EntradaA2` com o
-`tipo_entrada` certo e chamar `processar_entrada_a2`.
+geral não precisa conhecer os detalhes internos do A2 (que hoje tem 6
+tipos de entrada — ver TipoEntradaA2: comprovante por visão, confirmação
+por botão, divergência por botão, pagamento combinado confirmado, e o
+fluxo de "Só uma delas" em duas etapas — escolher_pagamento_parcial e
+pagamento_combinado_parcial, WA-06) — só precisa montar um `EntradaA2` com
+o `tipo_entrada` certo e chamar `processar_entrada_a2`.
 
 NÃO incluído aqui: executar_cobranca_diaria (o cron D-5/D0/D+5/D+10/D+15).
 Aquele fluxo não nasce de uma mensagem — é disparado direto pelo Railway
@@ -52,6 +54,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from app.agents.a2_cobranca.comprovante import (
     confirmar_pagamento,
     confirmar_pagamento_combinado,
+    iniciar_escolha_pagamento_parcial,
     marcar_apenas_uma_paga,
     marcar_valor_divergente,
     processar_comprovante_recebido,
@@ -81,12 +84,20 @@ class TipoEntradaA2(str, Enum):
     # (lista com todas as charges envolvidas no pagamento combinado).
     PAGAMENTO_COMBINADO_CONFIRMADO = "pagamento_combinado_confirmado"
 
-    # Fernanda apertou "Só uma delas" na mesma DM — só UMA das charges do
-    # pagamento combinado foi de fato paga. Exige: contract_id,
-    # charge_id_paga, charge_ids_restantes. PONTO EM ABERTO: qual é a
-    # charge_id_paga não vem do clique do botão sozinho — precisa de uma
-    # interação adicional ainda não desenhada (ver marcar_apenas_uma_paga
-    # em comprovante.py).
+    # Fernanda apertou "Só uma delas" na DM de pagamento combinado — 1ª
+    # etapa de um fluxo de duas etapas (WA-06, ver
+    # app/agents/a2_cobranca/button_ids.py): ainda não sabe qual charge foi
+    # paga, só dispara a pergunta (um botão por charge) pra ela escolher.
+    # NÃO altera nenhuma charge. Exige: contract_id, charge_ids,
+    # telefone_remetente (telefone de quem clicou, pra mandar a pergunta
+    # de volta pra ela).
+    ESCOLHER_PAGAMENTO_PARCIAL = "escolher_pagamento_parcial"
+
+    # Fernanda respondeu a pergunta da etapa anterior, clicando na charge
+    # específica que foi paga (ex: "Aluguel"). Exige: contract_id,
+    # charge_id_paga, charge_ids_restantes — ambos já vêm resolvidos do
+    # próprio clique (ver button_ids.py::montar_button_id_combinado_parcial),
+    # sem ambiguidade nenhuma.
     PAGAMENTO_COMBINADO_PARCIAL = "pagamento_combinado_parcial"
 
 
@@ -120,6 +131,12 @@ class EntradaA2(BaseModel):
     charge_id_paga: Optional[str] = None
     charge_ids_restantes: Optional[list[str]] = None
 
+    # Obrigatório só quando tipo_entrada == ESCOLHER_PAGAMENTO_PARCIAL —
+    # telefone de quem clicou (Fernanda), pra mandar a pergunta "qual foi
+    # paga" de volta pra ela. Nenhum outro tipo_entrada precisa disso hoje
+    # (as demais ações só respondem ao INQUILINO, nunca a quem clicou).
+    telefone_remetente: Optional[str] = None
+
     @model_validator(mode="after")
     def _valida_campos_por_tipo(self) -> "EntradaA2":
         if self.tipo_entrada == TipoEntradaA2.COMPROVANTE_RECEBIDO:
@@ -137,6 +154,12 @@ class EntradaA2(BaseModel):
                 raise ValueError(
                     "tipo_entrada=pagamento_combinado_confirmado exige charge_ids (lista)."
                 )
+        elif self.tipo_entrada == TipoEntradaA2.ESCOLHER_PAGAMENTO_PARCIAL:
+            if not self.charge_ids or not self.telefone_remetente:
+                raise ValueError(
+                    "tipo_entrada=escolher_pagamento_parcial exige charge_ids (lista) e "
+                    "telefone_remetente."
+                )
         elif self.tipo_entrada == TipoEntradaA2.PAGAMENTO_COMBINADO_PARCIAL:
             if not self.charge_id_paga or not self.charge_ids_restantes:
                 raise ValueError(
@@ -149,7 +172,7 @@ class EntradaA2(BaseModel):
 def processar_entrada_a2(entrada: EntradaA2) -> None:
     """Único ponto de entrada do A2 para o orquestrador geral chamar.
 
-    Decide, a partir de entrada.tipo_entrada, qual das 3 funções internas do
+    Decide, a partir de entrada.tipo_entrada, qual das funções internas do
     A2 chamar e com quais argumentos — o chamador não precisa importar nem
     conhecer processar_comprovante_recebido / confirmar_pagamento /
     marcar_valor_divergente diretamente, só este módulo.
@@ -170,6 +193,12 @@ def processar_entrada_a2(entrada: EntradaA2) -> None:
 
     if entrada.tipo_entrada == TipoEntradaA2.PAGAMENTO_COMBINADO_CONFIRMADO:
         confirmar_pagamento_combinado(entrada.contract_id, entrada.charge_ids)
+        return
+
+    if entrada.tipo_entrada == TipoEntradaA2.ESCOLHER_PAGAMENTO_PARCIAL:
+        iniciar_escolha_pagamento_parcial(
+            entrada.contract_id, entrada.charge_ids, entrada.telefone_remetente
+        )
         return
 
     if entrada.tipo_entrada == TipoEntradaA2.PAGAMENTO_COMBINADO_PARCIAL:
