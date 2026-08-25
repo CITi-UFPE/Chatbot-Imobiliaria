@@ -34,17 +34,17 @@ As migrations vivem em `docs/schemas/`:
 - `016_decisao_renovacao.sql` — tipo de renovação escolhido pela gestora e tratamento de contratos com decisão pendente no vencimento.
 - `017_correcao_reajuste_tardio.sql` — permite aplicar reajuste confirmado depois da data exata do aniversário.
 - `018_decisao_gestora_renovacao.sql` — registra no alerta a decisão de renovação ou encerramento tomada pela gestora.
-- `018_garantia_aluguel_antecipado.sql` — adiciona aluguel antecipado às modalidades de garantia. O número duplicado é histórico; ambos os arquivos `018` devem ser aplicados.
-- `019_normalizacao_telefone.sql` — normaliza telefones brasileiros na resolução, cria unicidade equivalente para contratos ativos/pendentes e preserva `resolver_contrato_por_telefone(text) -> uuid|null` para o papel `anon`.
+- `019_garantia_aluguel_antecipado.sql` — adiciona aluguel antecipado às modalidades de garantia.
 - `020_whatsapp_janela_atendimento.sql` — adiciona `agent_get_last_tenant_message_at()`, RPC de leitura da última mensagem recebida do inquilino, sem parâmetro de contrato e escopada por `agent_contract_id()`, usada pela política central de texto/template da WA-08.
+- `021_normalizacao_telefone.sql` — normaliza telefones brasileiros na resolução, cria unicidade equivalente para contratos ativos/pendentes e preserva `resolver_contrato_por_telefone(text) -> uuid|null` para o papel `anon`.
 
-**Rodar sempre nessa ordem** (001 antes do 002, os dois arquivos 018 antes do 019 — várias migrations posteriores dependem de funções/colunas criadas nas anteriores) via **SQL Editor** do dashboard: cole o conteúdo do arquivo, clique em Run, confirme "Success" antes de rodar o próximo.
+**Rodar sempre nessa ordem** (001 antes do 002, e assim por diante — várias migrations posteriores dependem de funções/colunas criadas nas anteriores) via **SQL Editor** do dashboard: cole o conteúdo do arquivo, clique em Run, confirme "Success" antes de rodar o próximo.
 
 Nota histórica: a primeira versão do `002` criava `staff_users` sem habilitar RLS — o próprio linter do SQL Editor pegou isso antes de rodar em produção. Corrigido com `alter table staff_users enable row level security;` logo após a criação da tabela. Se algum dia precisar recriar o projeto do zero, use a versão atual do arquivo (já com a correção).
 
 ## 3. Verificação pós-migration
 
-Checklist rápido depois de rodar todas as migrations até a 020:
+Checklist rápido depois de rodar todas as migrations até a 021:
 
 - **Table Editor**: as 9 tabelas presentes (8 de negócio + `staff_users`), todas com RLS habilitado. `contracts` já com a coluna `prazo_indeterminado` (Migration 013).
 - **Storage**: bucket `contracts` existe e está marcado como **Private**.
