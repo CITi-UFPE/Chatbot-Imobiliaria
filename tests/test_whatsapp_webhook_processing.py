@@ -239,7 +239,13 @@ def test_evento_de_status_nao_envia_nada(monkeypatch):
 
 
 def test_clique_interativo_nao_envia_resposta_automatica(monkeypatch):
-    monkeypatch.setattr(pm, "rotear_clique_botao_a2", lambda button_id: "Confirmado, obrigado.")
+    chamadas_roteamento = []
+
+    def fake_rotear(button_id, telefone_remetente):
+        chamadas_roteamento.append((button_id, telefone_remetente))
+        return "Confirmado, obrigado."
+
+    monkeypatch.setattr(pm, "rotear_clique_botao_a2", fake_rotear)
     enviados = []
     monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
 
@@ -247,6 +253,9 @@ def test_clique_interativo_nao_envia_resposta_automatica(monkeypatch):
 
     assert resposta == "Confirmado, obrigado."
     assert enviados == []  # telefone do clique é o da Fernanda, não do inquilino
+    # O telefone de quem clicou é repassado adiante (WA-06), mesmo que a
+    # maioria das ações não precise dele.
+    assert chamadas_roteamento == [("confirmar|contract-1|charge-1", "+5581900000000")]
 
 
 # ======================================================================

@@ -278,14 +278,18 @@ def _processar_clique_botao(mensagem: dict) -> Optional[str]:
     de um inquilino, então não passa por _resolver_contract_id nem por
     agent_log_message (não é mensagem de conversa de contrato, é ação
     administrativa). contract_id/charge_id vêm decodificados do próprio
-    button_id dentro de rotear_clique_botao_a2."""
+    button_id dentro de rotear_clique_botao_a2. O telefone de quem clicou
+    (`mensagem["from"]`) é repassado adiante (WA-06) só pra ação
+    ESCOLHER_PAGAMENTO_PARCIAL poder mandar a segunda pergunta de volta pra
+    ela — as demais ações ignoram esse valor."""
     interactive = mensagem.get("interactive", {})
     if interactive.get("type") != "button_reply":
         logger.warning("Mensagem interactive de tipo não suportado: %r", interactive.get("type"))
         return None
 
     button_id = interactive.get("button_reply", {}).get("id", "")
-    return rotear_clique_botao_a2(button_id)
+    telefone_remetente = mensagem.get("from", "")
+    return rotear_clique_botao_a2(button_id, telefone_remetente)
 
 
 def _baixar_midia_whatsapp(media_id: Optional[str]) -> str:

@@ -1,16 +1,24 @@
 """Testes do transporte WhatsApp do A2 (cobrança/comprovante) e do A5
-(escalonamento) — WA-05. Cobre todas as funções públicas de
+(escalonamento) — WA-05/WA-06. Cobre todas as funções públicas de
 app/agents/a2_cobranca/notificacao.py e app/agents/a5_escalonamento/
 notificacao.py em modo simulado (kill switch desligado), sucesso (cliente
 mockado) e falha (cliente mockado levantando). Nenhum destes testes acessa
 a Meta de verdade: em modo simulado, whatsapp_client.enviar_texto/
-enviar_template já retornam sem chamada HTTP sozinhos; nos demais casos,
-whatsapp_client.enviar_texto/enviar_template são substituídos por um fake
-via monkeypatch, igual ao padrão de tests/test_a4_whatsapp_notification.py.
+enviar_template/enviar_botoes já retornam sem chamada HTTP sozinhos; nos
+demais casos, essas funções são substituídas por um fake via monkeypatch,
+igual ao padrão de tests/test_a4_whatsapp_notification.py.
+
+WA-06: notificar_fernanda_comprovante e notificar_fernanda_pagamento_combinado
+passaram a enviar botões nativos via whatsapp_client.enviar_botoes (não mais
+enviar_texto com rótulos entre colchetes) — os testes dessas duas classes
+foram atualizados de acordo. O round-trip completo id-montado ->
+decodificar_button_id, e o payload de "Cobre os dois" sem "Só uma delas",
+ficam em tests/test_a2_whatsapp_buttons.py.
 """
 
 import pytest
 
+from app.agents.a2_cobranca import button_ids
 from app.agents.a2_cobranca import notificacao as notif_a2
 from app.agents.a5_escalonamento import notificacao as notif_a5
 from app.tools import whatsapp_client as wc
@@ -72,22 +80,34 @@ class TestEnviarMensagemCobranca:
 
 
 class TestNotificarFernandaComprovante:
+    CONTRACT_ID = "11111111-1111-1111-1111-111111111111"
+    CHARGE_ID = "charge-abc"
+
     def test_modo_simulado_nao_faz_rede(self):
         notif_a2.notificar_fernanda_comprovante(
-            "+5581988880000", "João Pereira", "Apto 305", 2200.0, "2026-07-15", 2200.0
+            "+5581988880000",
+            self.CONTRACT_ID,
+            self.CHARGE_ID,
+            "João Pereira",
+            "Apto 305",
+            2200.0,
+            "2026-07-15",
+            2200.0,
         )
 
-    def test_sucesso_chama_enviar_texto_com_conteudo_correto(self, monkeypatch):
+    def test_sucesso_chama_enviar_botoes_com_conteudo_e_ids_corretos(self, monkeypatch):
         chamadas = []
 
-        def fake_enviar_texto(telefone, texto):
-            chamadas.append((telefone, texto))
+        def fake_enviar_botoes(telefone, corpo, botoes):
+            chamadas.append((telefone, corpo, botoes))
             return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.FER1")
 
-        monkeypatch.setattr(wc, "enviar_texto", fake_enviar_texto)
+        monkeypatch.setattr(wc, "enviar_botoes", fake_enviar_botoes)
 
         notif_a2.notificar_fernanda_comprovante(
             "+5581988880000",
+            self.CONTRACT_ID,
+            self.CHARGE_ID,
             "João Pereira",
             "Apto 305",
             2200.0,
@@ -97,64 +117,95 @@ class TestNotificarFernandaComprovante:
         )
 
         assert len(chamadas) == 1
-        telefone, texto = chamadas[0]
+        telefone, corpo, botoes = chamadas[0]
         assert telefone == "+5581988880000"
-        assert "João Pereira" in texto
-        assert "Apto 305" in texto
-        assert "Identificado automaticamente como aluguel." in texto
-        assert "[ Confirmar ]" in texto
+        assert "João Pereira" in corpo
+        assert "Apto 305" in corpo
+        assert "Identificado automaticamente como aluguel." in corpo
+
+        assert [b["titulo"] for b in botoes] == ["Confirmar", "Valor diverge"]
+        confirmar = button_ids.decodificar_button_id(botoes[0]["id"])
+        assert confirmar.acao == button_ids.ACAO_CONFIRMAR
+        assert confirmar.contract_id == self.CONTRACT_ID
+        assert confirmar.charge_ids == [self.CHARGE_ID]
+        divergente = button_ids.decodificar_button_id(botoes[1]["id"])
+        assert divergente.acao == button_ids.ACAO_DIVERGENTE
+        assert divergente.contract_id == self.CONTRACT_ID
+        assert divergente.charge_ids == [self.CHARGE_ID]
 
     def test_falha_do_cliente_propaga(self, monkeypatch):
-        def enviar_texto_com_falha(*args, **kwargs):
+        def enviar_botoes_com_falha(*args, **kwargs):
             raise wc.WhatsAppPermanentError("número inválido")
 
-        monkeypatch.setattr(wc, "enviar_texto", enviar_texto_com_falha)
+        monkeypatch.setattr(wc, "enviar_botoes", enviar_botoes_com_falha)
 
         with pytest.raises(wc.WhatsAppPermanentError):
             notif_a2.notificar_fernanda_comprovante(
-                "+5581988880000", "João Pereira", "Apto 305", 2200.0, "2026-07-15", 2200.0
+                "+5581988880000",
+                self.CONTRACT_ID,
+                self.CHARGE_ID,
+                "João Pereira",
+                "Apto 305",
+                2200.0,
+                "2026-07-15",
+                2200.0,
             )
 
 
 class TestNotificarFernandaPagamentoCombinado:
+    CONTRACT_ID = "22222222-2222-2222-2222-222222222222"
     CHARGES = [
-        {"tipo": "aluguel", "valor_esperado": 2200.0},
-        {"tipo": "agua", "valor_esperado": 100.0},
+        {"id": "charge-aluguel", "tipo": "aluguel", "valor_esperado": 2200.0},
+        {"id": "charge-agua", "tipo": "agua", "valor_esperado": 100.0},
     ]
 
     def test_modo_simulado_nao_faz_rede(self):
         notif_a2.notificar_fernanda_pagamento_combinado(
-            "+5581988880000", "João Pereira", "Apto 305", 2300.0, "2026-07-17", self.CHARGES
+            "+5581988880000", self.CONTRACT_ID, "João Pereira", "Apto 305", 2300.0, "2026-07-17", self.CHARGES
         )
 
-    def test_sucesso_chama_enviar_texto_com_conteudo_correto(self, monkeypatch):
+    def test_sucesso_chama_enviar_botoes_com_conteudo_e_ids_corretos(self, monkeypatch):
         chamadas = []
 
-        def fake_enviar_texto(telefone, texto):
-            chamadas.append((telefone, texto))
+        def fake_enviar_botoes(telefone, corpo, botoes):
+            chamadas.append((telefone, corpo, botoes))
             return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.COMB1")
 
-        monkeypatch.setattr(wc, "enviar_texto", fake_enviar_texto)
+        monkeypatch.setattr(wc, "enviar_botoes", fake_enviar_botoes)
 
         notif_a2.notificar_fernanda_pagamento_combinado(
-            "+5581988880000", "João Pereira", "Apto 305", 2300.0, "2026-07-17", self.CHARGES
+            "+5581988880000", self.CONTRACT_ID, "João Pereira", "Apto 305", 2300.0, "2026-07-17", self.CHARGES
         )
 
         assert len(chamadas) == 1
-        telefone, texto = chamadas[0]
+        telefone, corpo, botoes = chamadas[0]
         assert telefone == "+5581988880000"
-        assert "Aluguel: R$ 2200.00" in texto
-        assert "[ Cobre os dois ]" in texto
+        assert "Aluguel: R$ 2200.00" in corpo
+        assert "resolver manualmente" in corpo
+
+        # 2 botões: "Cobre os dois" e "Só uma delas" (fluxo de 2 etapas da
+        # WA-06 — ver notificacao.py e tests/test_a2_whatsapp_buttons.py
+        # pro round-trip completo). Sem "Valor diverge" nesta mensagem.
+        assert [b["titulo"] for b in botoes] == ["Cobre os dois", "Só uma delas"]
+        decod_todos = button_ids.decodificar_button_id(botoes[0]["id"])
+        assert decod_todos.acao == button_ids.ACAO_COMBINADO_TODOS
+        assert decod_todos.contract_id == self.CONTRACT_ID
+        assert decod_todos.charge_ids == ["charge-aluguel", "charge-agua"]
+
+        decod_escolher = button_ids.decodificar_button_id(botoes[1]["id"])
+        assert decod_escolher.acao == button_ids.ACAO_ESCOLHER_PARCIAL
+        assert decod_escolher.contract_id == self.CONTRACT_ID
+        assert decod_escolher.charge_ids == ["charge-aluguel", "charge-agua"]
 
     def test_falha_do_cliente_propaga(self, monkeypatch):
-        def enviar_texto_com_falha(*args, **kwargs):
+        def enviar_botoes_com_falha(*args, **kwargs):
             raise wc.WhatsAppTransientError("timeout")
 
-        monkeypatch.setattr(wc, "enviar_texto", enviar_texto_com_falha)
+        monkeypatch.setattr(wc, "enviar_botoes", enviar_botoes_com_falha)
 
         with pytest.raises(wc.WhatsAppTransientError):
             notif_a2.notificar_fernanda_pagamento_combinado(
-                "+5581988880000", "João Pereira", "Apto 305", 2300.0, "2026-07-17", self.CHARGES
+                "+5581988880000", self.CONTRACT_ID, "João Pereira", "Apto 305", 2300.0, "2026-07-17", self.CHARGES
             )
 
 

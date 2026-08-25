@@ -43,6 +43,7 @@ from app.agents.a2_cobranca.notificacao import (
     notificar_fernanda_comprovante,
     notificar_fernanda_pagamento_combinado,
     notificar_fernanda_sem_match,
+    notificar_pergunta_qual_charge_paga,
     responder_confirmacao_pagamento,
 )
 from app.agents.a2_cobranca.schemas import ComprovanteExtraido
@@ -152,15 +153,18 @@ def _resolver_charge_e_notificar(
     módulo. Não devolve nada — cada ramo já cuida de marcar status (quando
     aplicável) e notificar a Fernanda com o formato de mensagem certo.
 
-    PENDÊNCIA CONHECIDA (achada na revisão da WA-05, endereçar na WA-06,
-    que já mexe neste arquivo pra ligar os botões de verdade): em cada
-    ramo abaixo, _marcar_aguardando_confirmacao (grava no banco) roda
-    ANTES da chamada notificar_fernanda_*. Hoje, se o envio falhar depois
-    do banco já gravado, a exceção sobe sem tratamento e quem chama trata
-    como falha total — perdendo a informação de que o status da charge já
-    foi atualizado de verdade. Mesmo padrão do achado já corrigido em
-    app/agents/a2_cobranca/cobranca.py::_processar_charge e
-    app/agents/a5_escalonamento/escalonamento.py::executar_escalonamento."""
+    Nos ramos em que _marcar_aguardando_confirmacao (grava no banco) roda
+    ANTES do notificar_fernanda_* (Caso A, B.a, B.b), a notificação vai
+    dentro de um try/except que só loga — nunca repropaga: mesmo padrão já
+    usado em app/agents/a2_cobranca/cobranca.py::_processar_charge e
+    app/agents/a5_escalonamento/escalonamento.py::executar_escalonamento.
+    Motivo: se a notificação falhar (rede instável etc.) depois do banco já
+    gravado, quem chama não pode tratar isso como falha total — o status da
+    charge já mudou de verdade, só o aviso à Fernanda que não saiu; ela
+    ainda vai ver a charge pendente de confirmação e pode ser avisada por
+    outro canal. Os ramos SEM gravação prévia (charges_abertas vazio, valor
+    ausente, B.c) não precisam desse cuidado — não há nada "já feito" que
+    a falha possa mascarar."""
     telefone_fernanda = ""  # TODO: número/ID da Fernanda — não decidido nesta task
     nome = dados_contrato.get("inquilino_nome", "")
     imovel = dados_contrato.get("imovel_identificacao", "")
@@ -181,11 +185,18 @@ def _resolver_charge_e_notificar(
     if len(charges_abertas) == 1:
         charge_unica = charges_abertas[0]
         _marcar_aguardando_confirmacao(client_agente, charge_unica["id"], extraido)
-        notificar_fernanda_comprovante(
-            telefone_fernanda, nome, imovel,
-            extraido.valor_identificado, extraido.data_identificada,
-            valor_esperado=charge_unica["valor_esperado"],
-        )
+        try:
+            notificar_fernanda_comprovante(
+                telefone_fernanda, contract_id, charge_unica["id"], nome, imovel,
+                extraido.valor_identificado, extraido.data_identificada,
+                valor_esperado=charge_unica["valor_esperado"],
+            )
+        except Exception:
+            logger.exception(
+                "Falha ao notificar Fernanda sobre comprovante (charge %s, contrato %s) — "
+                "a charge já foi marcada como aguardando_confirmacao.",
+                charge_unica["id"], contract_id,
+            )
         return
 
     # Caso B — 2+ charges em aberto: precisa decidir por valor.
@@ -208,30 +219,44 @@ def _resolver_charge_e_notificar(
     if len(matches_individuais) == 1 and not bate_com_soma:
         charge_match = matches_individuais[0]
         _marcar_aguardando_confirmacao(client_agente, charge_match["id"], extraido)
-        notificar_fernanda_comprovante(
-            telefone_fernanda, nome, imovel,
-            extraido.valor_identificado, extraido.data_identificada,
-            valor_esperado=charge_match["valor_esperado"],
-            nota_deteccao_automatica=(
-                f"Identificado automaticamente como {charge_match['tipo']}, baseado no "
-                f"valor — confirma?"
-            ),
-        )
+        try:
+            notificar_fernanda_comprovante(
+                telefone_fernanda, contract_id, charge_match["id"], nome, imovel,
+                extraido.valor_identificado, extraido.data_identificada,
+                valor_esperado=charge_match["valor_esperado"],
+                nota_deteccao_automatica=(
+                    f"Identificado automaticamente como {charge_match['tipo']}, baseado no "
+                    f"valor — confirma?"
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "Falha ao notificar Fernanda sobre comprovante (charge %s, contrato %s) — "
+                "a charge já foi marcada como aguardando_confirmacao.",
+                charge_match["id"], contract_id,
+            )
         return
 
     # B.b — bate com a soma de todas (pagamento combinado). Marca todas como
     # aguardando_confirmacao (tentativa) — se Fernanda escolher "Só uma
-    # delas" depois, a outra precisa ser revertida manualmente por ela
-    # (callback disso ainda não existe, mesma lacuna do restante do fluxo
-    # de botão).
+    # delas" depois, o fluxo de duas etapas (WA-06, ver
+    # notificar_pergunta_qual_charge_paga / marcar_apenas_uma_paga) já
+    # cuida de reverter as demais pra 'pendente' sozinho.
     if bate_com_soma:
         for c in charges_abertas:
             _marcar_aguardando_confirmacao(client_agente, c["id"], extraido)
-        notificar_fernanda_pagamento_combinado(
-            telefone_fernanda, nome, imovel,
-            extraido.valor_identificado, extraido.data_identificada,
-            charges_envolvidas=charges_abertas,
-        )
+        try:
+            notificar_fernanda_pagamento_combinado(
+                telefone_fernanda, contract_id, nome, imovel,
+                extraido.valor_identificado, extraido.data_identificada,
+                charges_envolvidas=charges_abertas,
+            )
+        except Exception:
+            logger.exception(
+                "Falha ao notificar Fernanda sobre pagamento combinado (charges %s, "
+                "contrato %s) — todas já foram marcadas como aguardando_confirmacao.",
+                [c["id"] for c in charges_abertas], contract_id,
+            )
         return
 
     # B.c — não bate com nenhuma individual nem com a soma. Não tenta
@@ -347,19 +372,31 @@ def confirmar_pagamento_combinado(contract_id: str, charge_ids: list[str]) -> No
     )
 
 
+def iniciar_escolha_pagamento_parcial(
+    contract_id: str, charge_ids: list[str], telefone_fernanda: str
+) -> None:
+    """Chamado quando Fernanda aperta 'Só uma delas' (1ª etapa, ver
+    button_ids.py e notificacao.py) — NÃO confirma nem reverte nenhuma
+    charge ainda. Só busca o `tipo` de cada charge envolvida (pra montar um
+    botão legível — "Aluguel", "Água" — na 2ª etapa) e dispara a pergunta
+    de verdade (notificar_pergunta_qual_charge_paga), que é quem carrega o
+    botão específico de cada charge. `marcar_apenas_uma_paga` abaixo só é
+    chamada depois que ELA responder qual foi."""
+    client_agente = obter_client_agente(contract_id)
+    resposta = client_agente.table("charges").select("id, tipo").in_("id", charge_ids).execute()
+    charges = resposta.data or []
+    notificar_pergunta_qual_charge_paga(telefone_fernanda, contract_id, charges)
+
+
 def marcar_apenas_uma_paga(
     contract_id: str, charge_id_paga: str, charge_ids_restantes: list[str]
 ) -> None:
-    """Chamado quando Fernanda aperta 'Só uma delas' — o comprovante NÃO
-    cobre todas as charges que tinham sido marcadas como
-    aguardando_confirmacao no pagamento combinado; só uma foi paga de fato.
-
-    PONTO EM ABERTO: o botão 'Só uma delas', sozinho, não diz QUAL charge é
-    a paga — falta uma interação adicional (Fernanda especificar qual,
-    provavelmente por uma lista de opções ou resposta de texto), que ainda
-    não foi desenhada nem implementada. Esta função já assume que
-    charge_id_paga chega resolvido por quem a chama; só executa a ação de
-    banco (confirmar a paga, reverter as demais).
+    """Chamado quando Fernanda já respondeu, na 2ª etapa (ver
+    iniciar_escolha_pagamento_parcial acima), qual charge especificamente
+    foi paga — o comprovante NÃO cobre todas as charges que tinham sido
+    marcadas como aguardando_confirmacao no pagamento combinado; só uma foi
+    paga de fato. charge_id_paga já chega resolvido sem ambiguidade (o
+    clique da 2ª etapa é por charge, não mais por "algumas delas").
 
     As demais voltam para status='pendente' (não 'atrasado' direto) — o
     próximo cron diário recalcula dias_atraso do zero a partir da data real
