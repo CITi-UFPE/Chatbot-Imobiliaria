@@ -199,6 +199,24 @@ def _access_token_obrigatorio() -> str:
     return valor
 
 
+def telefone_staff() -> str:
+    """Telefone (E.164) que recebe notificações dirigidas À EQUIPE (não ao
+    inquilino) — WHATSAPP_STAFF_PHONE_NUMBER, reaproveitado por
+    app/agents/a4_gestao_contratual/fluxo.py e
+    app/agents/a5_escalonamento/notificacao.py, centralizado aqui pra não
+    duplicar a mesma checagem em cada consumidor (os dois tinham cópias
+    quase idênticas de "_telefone_staff" até a WA-05). RuntimeError (não
+    WhatsAppConfigError) de propósito: mantém compatibilidade com os testes
+    já escritos contra esse comportamento em ambos os agentes."""
+    valor = os.environ.get("WHATSAPP_STAFF_PHONE_NUMBER")
+    if not valor:
+        raise RuntimeError(
+            "WHATSAPP_STAFF_PHONE_NUMBER não configurado — necessário para notificar a "
+            "equipe (envio está ativo, mas falta o destino)."
+        )
+    return valor
+
+
 def montar_url_base() -> str:
     """https://graph.facebook.com/{versao}/{phone_number_id} — URL usada
     pelos envios de texto/template/botões (WA-02/WA-03). Levanta

@@ -126,16 +126,35 @@ def _processar_charge(charge_raw: dict, hoje: date) -> None:
     # restritos aos estágios definidos.
     estagio = _determinar_estagio(dias_atraso_hoje)
     deve_enviar_mensagem = estagio is not None and estagio != charge.mensagem_estagio
-    novo_mensagem_estagio = estagio if deve_enviar_mensagem else charge.mensagem_estagio
 
     client_agente = None
+    mensagem_enviada_com_sucesso = False
 
     if deve_enviar_mensagem:
         client_agente = obter_client_agente(charge.contract_id)
         dados_contrato = _buscar_dados_cobranca_contrato(client_agente)
 
         texto = montar_mensagem(charge, dados_contrato, estagio, dias_atraso_hoje)
-        enviar_mensagem_cobranca(dados_contrato.telefone_whatsapp, texto)
+        try:
+            enviar_mensagem_cobranca(dados_contrato.telefone_whatsapp, texto)
+            mensagem_enviada_com_sucesso = True
+        except Exception:
+            # Falha de transporte NÃO pode impedir o recálculo diário de
+            # dias_atraso/status logo abaixo (ver comentário acima sobre os
+            # dois ficarem desacoplados do envio) — só mensagem_estagio fica
+            # de fora do update desta execução, pra o cron tentar reenviar
+            # amanhã em vez de marcar o estágio como "já avisado" sem ter
+            # avisado de verdade.
+            logger.exception(
+                "Falha ao enviar mensagem de cobrança (charge %s, contrato %s) — "
+                "dias_atraso/status ainda serão recalculados; reenvio será tentado amanhã.",
+                charge.charge_id,
+                charge.contract_id,
+            )
+
+    novo_mensagem_estagio = (
+        estagio if deve_enviar_mensagem and mensagem_enviada_com_sucesso else charge.mensagem_estagio
+    )
 
     # Update é feito só quando algo de fato mudou — evita RPC (e write no
     # banco) todo dia pra charges cujo dias_atraso já está correto (ex.:
@@ -159,7 +178,7 @@ def _processar_charge(charge_raw: dict, hoje: date) -> None:
             },
         ).execute()
 
-    if estagio == "d+15" and deve_enviar_mensagem:
+    if estagio == "d+15" and deve_enviar_mensagem and mensagem_enviada_com_sucesso:
         # Disparado pelo PROCESSO (este cron), não por mensagem do inquilino
         # — por isso não passa por avaliar_escalonamento (que só avalia
         # texto de conversa), e sim monta o AvaliacaoEscalonamento direto e
