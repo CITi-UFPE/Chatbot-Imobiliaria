@@ -1,40 +1,69 @@
 """Envio de mensagens do A2 — Cobrança.
 
-Mesmo padrão do notificar_staff do A5: sem WHATSAPP_ACCESS_TOKEN configurado
-(hoje é o caso), só loga o que seria enviado e retorna — não quebra o fluxo
-de cobrança por causa de uma dependência externa que ainda não existe.
-Quando as credenciais existirem, trocar o corpo por uma chamada real à Meta
-Cloud API, mantendo a mesma assinatura.
+WA-05: transporte real via app/tools/whatsapp_client.py (fundação/WA-01,
+transporte HTTP/WA-02, botões e mídia/WA-03) — antes, todo envio real
+(WHATSAPP_ACCESS_TOKEN configurado) caía num NotImplementedError, o que
+quebrava o cron assim que alguém preenchesse o token. Com o kill switch
+(WHATSAPP_ENVIO_ATIVO) desligado — padrão hoje — o comportamento não muda:
+whatsapp_client.enviar_texto/enviar_template já cai em modo simulado
+sozinho (loga e devolve sem chamada HTTP), então nada aqui precisa checar
+o kill switch explicitamente.
 
-notificar_fernanda_comprovante é a mais complexa das três: precisa de
-mensagem interativa com 2 botões nativos (Confirmar / Valor diverge), que é
-um formato específico da API do WhatsApp Business (não é texto livre) —
-ainda não implementado nem quando o token existir, porque depende de decidir
-o formato exato da interactive message e de como o webhook vai processar o
-callback do botão (ver TODO em comprovante.py sobre o "ponto em aberto" de
-timeout de 24h/48h, que também depende dessa peça existir).
+Reativo vs proativo (decisão desta task; a janela de 24h completa da Meta
+fica pra WA-08): `enviar_mensagem_cobranca` é disparada pelo cron diário
+(app/agents/a2_cobranca/cobranca.py), sem nenhuma mensagem recente do
+inquilino no meio — vai como TEMPLATE. As demais quatro funções abaixo são
+sempre disparadas de dentro do processamento de um webhook (comprovante
+recebido, clique de confirmação) — vão como TEXTO LIVRE.
+
+`notificar_fernanda_comprovante` e `notificar_fernanda_pagamento_combinado`
+ainda mandam o texto com os botões representados como rótulos entre
+colchetes (ex: "[ Confirmar ]   [ Valor diverge ]"), exatamente como antes
+— NÃO viram uma interactive message real (`whatsapp_client.enviar_botoes`,
+já disponível desde a WA-03) nesta task, porque isso exige contract_id e
+charge_id pra montar o `id` do botão (app/agents/a2_cobranca/button_ids.py)
+e essas duas funções não recebem esses parâmetros hoje — mudar a
+assinatura pra isso é decisão da WA-06, junto da decodificação do clique.
 """
 
 import logging
-import os
+
+from app.tools import whatsapp_client
 
 logger = logging.getLogger(__name__)
 
+# Template genérico para as mensagens de cobrança do cron (D-5/D0/D+5/D+10/
+# D+15) — um único parâmetro com o texto já montado por mensagens.py (regra
+# desta task: não reescrever esse texto). O catálogo
+# (docs/whatsapp/templates-meta.md) desenha 3 templates por estágio, com
+# variáveis próprias (nome, valor, multa, juros...) — migrar pra eles exige
+# expor esses campos separadamente em vez do texto já pronto que
+# enviar_mensagem_cobranca recebe hoje; fica pra quando mensagens.py for
+# reestruturado (WA-08).
+_TEMPLATE_COBRANCA_MENSAGEM = "cobranca_mensagem"
+
+
+def _logar_falha_envio(operacao: str, telefone: str, erro: Exception) -> None:
+    """Log explícito de falha, com destino mascarado — chamado ANTES de
+    repropagar a exceção em toda função deste módulo, pra nunca depender só
+    de quem chama (cron, webhook) logar a falha por fora."""
+    logger.error(
+        "whatsapp_client: falha ao enviar (operacao=%s telefone=%s): %s",
+        operacao,
+        whatsapp_client.mascarar_telefone(telefone),
+        erro,
+    )
+
 
 def enviar_mensagem_cobranca(telefone_whatsapp: str, texto: str) -> None:
-    """Envia (ou, por ora, loga) uma mensagem de cobrança D-5/D0/D+5/D+10/D+15."""
-    if not os.environ.get("WHATSAPP_ACCESS_TOKEN"):
-        logger.warning(
-            "WhatsApp Business API ainda não configurada — mensagem de cobrança NÃO "
-            "enviada para %s (ficou só neste log):\n%s",
-            telefone_whatsapp,
-            texto,
-        )
-        return
-    raise NotImplementedError(
-        "WHATSAPP_ACCESS_TOKEN já configurado, mas o envio real via Meta Cloud API "
-        "ainda não foi implementado neste módulo."
-    )
+    """Envia a mensagem de cobrança D-5/D0/D+5/D+10/D+15 — disparada pelo
+    cron diário, portanto proativa (não há mensagem recente do inquilino
+    nesta janela): transporta como template."""
+    try:
+        whatsapp_client.enviar_template(telefone_whatsapp, _TEMPLATE_COBRANCA_MENSAGEM, [texto])
+    except Exception as erro:
+        _logar_falha_envio("enviar_mensagem_cobranca", telefone_whatsapp, erro)
+        raise
 
 
 def notificar_fernanda_comprovante(
@@ -47,12 +76,12 @@ def notificar_fernanda_comprovante(
     nota_deteccao_automatica: str | None = None,
 ) -> None:
     """DM para a Fernanda (não o grupo) com os dois botões nativos
-    (Confirmar / Valor diverge). `nota_deteccao_automatica` é usada quando
-    havia mais de uma charge em aberto e o sistema resolveu qual delas
-    sozinho, por valor batendo dentro da margem — ver
-    comprovante.py:_processar_com_multiplas_charges_abertas. Formato de
-    interactive message da Meta Cloud API ainda não implementado — ver
-    docstring do módulo."""
+    representados como texto (Confirmar / Valor diverge — ver docstring do
+    módulo sobre por que ainda não é uma interactive message real).
+    `nota_deteccao_automatica` é usada quando havia mais de uma charge em
+    aberto e o sistema resolveu qual delas sozinho, por valor batendo
+    dentro da margem — ver comprovante.py:_resolver_charge_e_notificar.
+    Disparada de dentro do webhook (comprovante recebido): texto livre."""
     nota = f"\n\n{nota_deteccao_automatica}" if nota_deteccao_automatica else ""
     texto = (
         f"Novo comprovante recebido\n\n"
@@ -64,18 +93,11 @@ def notificar_fernanda_comprovante(
         f"{nota}\n\n"
         f"[ Confirmar ]   [ Valor diverge ]"
     )
-    if not os.environ.get("WHATSAPP_ACCESS_TOKEN"):
-        logger.warning(
-            "WhatsApp Business API ainda não configurada — DM de comprovante NÃO enviada "
-            "para Fernanda (%s). Conteúdo que seria enviado:\n%s",
-            telefone_fernanda,
-            texto,
-        )
-        return
-    raise NotImplementedError(
-        "Envio de interactive message com botões nativos ainda não implementado — "
-        "formato específico da Meta Cloud API, distinto de texto livre."
-    )
+    try:
+        whatsapp_client.enviar_texto(telefone_fernanda, texto)
+    except Exception as erro:
+        _logar_falha_envio("notificar_fernanda_comprovante", telefone_fernanda, erro)
+        raise
 
 
 def notificar_fernanda_pagamento_combinado(
@@ -86,11 +108,9 @@ def notificar_fernanda_pagamento_combinado(
     data_extraida: str | None,
     charges_envolvidas: list[dict],
 ) -> None:
-    """DM com 3 botões quando o valor do comprovante bate com a SOMA de duas
-    (ou mais) charges em aberto — ex: inquilino pagou aluguel + água juntos
-    numa PIX só. Botões: 'Cobre os dois' / 'Só uma delas' / 'Valor diverge'.
-    Formato de interactive message ainda não implementado (mesma lacuna de
-    notificar_fernanda_comprovante)."""
+    """DM com 3 botões (representados como texto — mesma ressalva acima)
+    quando o valor do comprovante bate com a SOMA de duas (ou mais) charges
+    em aberto. Disparada de dentro do webhook: texto livre."""
     linhas_charges = "\n".join(
         f"- {c['tipo'].capitalize()}: R$ {c['valor_esperado']:.2f}" for c in charges_envolvidas
     )
@@ -104,17 +124,11 @@ def notificar_fernanda_pagamento_combinado(
         f"Charges em aberto que juntas somam esse valor (R$ {soma:.2f}):\n{linhas_charges}\n\n"
         f"[ Cobre os dois ]   [ Só uma delas ]   [ Valor diverge ]"
     )
-    if not os.environ.get("WHATSAPP_ACCESS_TOKEN"):
-        logger.warning(
-            "WhatsApp Business API ainda não configurada — DM de pagamento combinado NÃO "
-            "enviada para Fernanda (%s). Conteúdo que seria enviado:\n%s",
-            telefone_fernanda,
-            texto,
-        )
-        return
-    raise NotImplementedError(
-        "Envio de interactive message com 3 botões ainda não implementado."
-    )
+    try:
+        whatsapp_client.enviar_texto(telefone_fernanda, texto)
+    except Exception as erro:
+        _logar_falha_envio("notificar_fernanda_pagamento_combinado", telefone_fernanda, erro)
+        raise
 
 
 def notificar_fernanda_sem_match(
@@ -126,12 +140,8 @@ def notificar_fernanda_sem_match(
     charges_em_aberto: list[dict],
 ) -> None:
     """Usada quando o valor do comprovante não bate (dentro da margem) com
-    nenhuma charge individual nem com a soma delas — o sistema NÃO tenta
-    adivinhar. Só informa a situação; sem botões de ação automática, porque
-    não há nenhuma correspondência confiável pra propor. Fernanda resolve
-    pelo canal normal, fora do fluxo automatizado (mesmo espírito do "Valor
-    diverge" original: nenhuma notificação pro grupo, só pendência com
-    ela)."""
+    nenhuma charge individual nem com a soma delas. Sem botões — Fernanda
+    resolve pelo canal normal. Disparada de dentro do webhook: texto livre."""
     linhas_charges = (
         "\n".join(f"- {c['tipo'].capitalize()}: R$ {c['valor_esperado']:.2f}" for c in charges_em_aberto)
         if charges_em_aberto
@@ -146,31 +156,21 @@ def notificar_fernanda_sem_match(
         f"Charges em aberto no contrato:\n{linhas_charges}\n\n"
         f"O valor não bate com nenhuma delas nem com a soma — resolver manualmente."
     )
-    if not os.environ.get("WHATSAPP_ACCESS_TOKEN"):
-        logger.warning(
-            "WhatsApp Business API ainda não configurada — aviso de comprovante sem match "
-            "NÃO enviado para Fernanda (%s). Conteúdo que seria enviado:\n%s",
-            telefone_fernanda,
-            texto,
-        )
-        return
-    raise NotImplementedError(
-        "Envio de mensagem informativa (sem botão) ainda não implementado."
-    )
+    try:
+        whatsapp_client.enviar_texto(telefone_fernanda, texto)
+    except Exception as erro:
+        _logar_falha_envio("notificar_fernanda_sem_match", telefone_fernanda, erro)
+        raise
 
 
 def responder_confirmacao_pagamento(telefone_whatsapp: str, nome_inquilino: str) -> None:
-    """Resposta automática ao inquilino quando Fernanda confirma o pagamento."""
+    """Resposta automática ao inquilino quando Fernanda confirma o
+    pagamento — disparada de dentro do processamento do clique de botão
+    dela (webhook): texto livre, mesmo padrão de resposta ao inquilino da
+    WA-04."""
     texto = f"Recebemos seu comprovante, {nome_inquilino}. Pagamento confirmado, obrigado!"
-    if not os.environ.get("WHATSAPP_ACCESS_TOKEN"):
-        logger.warning(
-            "WhatsApp Business API ainda não configurada — confirmação automática NÃO "
-            "enviada para %s. Conteúdo que seria enviado:\n%s",
-            telefone_whatsapp,
-            texto,
-        )
-        return
-    raise NotImplementedError(
-        "WHATSAPP_ACCESS_TOKEN já configurado, mas o envio real via Meta Cloud API "
-        "ainda não foi implementado neste módulo."
-    )
+    try:
+        whatsapp_client.enviar_texto(telefone_whatsapp, texto)
+    except Exception as erro:
+        _logar_falha_envio("responder_confirmacao_pagamento", telefone_whatsapp, erro)
+        raise

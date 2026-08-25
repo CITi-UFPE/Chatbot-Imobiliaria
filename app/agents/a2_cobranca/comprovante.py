@@ -150,7 +150,17 @@ def _resolver_charge_e_notificar(
 ) -> None:
     """Implementa a regra de decisão Caso A / Caso B descrita no topo do
     módulo. Não devolve nada — cada ramo já cuida de marcar status (quando
-    aplicável) e notificar a Fernanda com o formato de mensagem certo."""
+    aplicável) e notificar a Fernanda com o formato de mensagem certo.
+
+    PENDÊNCIA CONHECIDA (achada na revisão da WA-05, endereçar na WA-06,
+    que já mexe neste arquivo pra ligar os botões de verdade): em cada
+    ramo abaixo, _marcar_aguardando_confirmacao (grava no banco) roda
+    ANTES da chamada notificar_fernanda_*. Hoje, se o envio falhar depois
+    do banco já gravado, a exceção sobe sem tratamento e quem chama trata
+    como falha total — perdendo a informação de que o status da charge já
+    foi atualizado de verdade. Mesmo padrão do achado já corrigido em
+    app/agents/a2_cobranca/cobranca.py::_processar_charge e
+    app/agents/a5_escalonamento/escalonamento.py::executar_escalonamento."""
     telefone_fernanda = ""  # TODO: número/ID da Fernanda — não decidido nesta task
     nome = dados_contrato.get("inquilino_nome", "")
     imovel = dados_contrato.get("imovel_identificacao", "")

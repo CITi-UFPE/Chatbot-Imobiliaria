@@ -130,7 +130,14 @@ def avaliar_escalonamento(
 
 def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) -> str:
     """Grava a escalação no banco (via RPC, com o token escopado do agente)
-    e notifica a equipe. Devolve o protocolo gerado pelo banco."""
+    e notifica a equipe. Devolve o protocolo gerado pelo banco.
+
+    A gravação (RPC) é a fonte da verdade — o caso já está escalado, com
+    protocolo válido, assim que ela retorna. Uma falha só no aviso à
+    equipe (rede instável, WHATSAPP_STAFF_PHONE_NUMBER ausente etc.) por
+    isso não pode derrubar o retorno do protocolo nem a resposta que o
+    chamador devolve ao inquilino (avaliacao.resposta_para_inquilino) — a
+    falha é logada, não engolida, mas não propaga daqui."""
     client = obter_client_agente(contract_id)
     resposta = client.rpc(
         "agent_create_escalation",
@@ -138,11 +145,19 @@ def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) 
     ).execute()
     protocolo = resposta.data
 
-    notificar_staff(
-        f"Novo caso escalado — protocolo {protocolo}\n"
-        f"Motivo: {avaliacao.motivo}\n"
-        f"{avaliacao.descricao}"
-    )
+    try:
+        notificar_staff(
+            f"Novo caso escalado — protocolo {protocolo}\n"
+            f"Motivo: {avaliacao.motivo}\n"
+            f"{avaliacao.descricao}"
+        )
+    except Exception:
+        logger.exception(
+            "Falha ao notificar a equipe sobre o escalonamento %s (contrato %s) — "
+            "a escalação em si já foi gravada e o protocolo continua válido.",
+            protocolo,
+            contract_id,
+        )
 
     return protocolo
 

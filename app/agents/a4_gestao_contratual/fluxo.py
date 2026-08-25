@@ -101,16 +101,6 @@ _LABEL_RENOVACAO = "Renovação de contrato"
 _LABEL_REAJUSTE = "Reajuste de aluguel"
 
 
-def _telefone_staff() -> str:
-    valor = os.environ.get("WHATSAPP_STAFF_PHONE_NUMBER")
-    if not valor:
-        raise RuntimeError(
-            "WHATSAPP_STAFF_PHONE_NUMBER não configurado — não é possível transportar "
-            "o alerta de gestão contratual (envio está ativo, mas falta o destino)."
-        )
-    return valor
-
-
 def _notificar_staff_alerta_contratual(tipo_label: str, mensagem: str) -> Optional[str]:
     """Implementação PADRÃO de enviar_notificacao_fn (injetável em
     processar_alerta_renovacao/processar_calculo_reajuste, ver abaixo) — só
@@ -123,7 +113,7 @@ def _notificar_staff_alerta_contratual(tipo_label: str, mensagem: str) -> Option
     ou None em modo simulado."""
     if not whatsapp_client.envio_ativo():
         return None
-    destino = _telefone_staff()
+    destino = whatsapp_client.telefone_staff()
     resultado = whatsapp_client.enviar_template(destino, _TEMPLATE_ALERTA_CONTRATUAL, [tipo_label, mensagem])
     return resultado.message_id
 
