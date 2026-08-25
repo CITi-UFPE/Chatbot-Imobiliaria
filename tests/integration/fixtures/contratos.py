@@ -20,6 +20,11 @@ import pytest
 from supabase import Client
 
 PREFIXO_TELEFONE_FIXTURE = "+551199990"
+TELEFONES_FIXTURE_NORMALIZACAO = (
+    "+55 (81) 9876-5420",
+    "(81) 3456-7821",
+    "81998765420",
+)
 
 
 def _telefone(sufixo: int) -> str:
@@ -291,6 +296,33 @@ def contrato_outro_para_isolamento(service_role_client: Client) -> Iterator[dict
     telefone = _telefone(8)
     dados = _contrato_base(
         imovel_identificacao="Apto 1010, Ed. Fixture Isolamento",
+        telefone_whatsapp=telefone,
+    )
+    contract_id = _criar(service_role_client, dados)
+    yield {"contract_id": contract_id, "telefone": telefone, "dados": dados}
+    _limpar(service_role_client, telefone)
+
+
+# ============================================================
+# 9 e 10 — Resolução por telefone brasileiro (Migration 019)
+# ============================================================
+@pytest.fixture
+def contrato_telefone_movel_legado(service_role_client: Client) -> Iterator[dict[str, Any]]:
+    telefone = TELEFONES_FIXTURE_NORMALIZACAO[0]
+    dados = _contrato_base(
+        imovel_identificacao="Apto Fixture Telefone Móvel",
+        telefone_whatsapp=telefone,
+    )
+    contract_id = _criar(service_role_client, dados)
+    yield {"contract_id": contract_id, "telefone": telefone, "dados": dados}
+    _limpar(service_role_client, telefone)
+
+
+@pytest.fixture
+def contrato_telefone_fixo(service_role_client: Client) -> Iterator[dict[str, Any]]:
+    telefone = TELEFONES_FIXTURE_NORMALIZACAO[1]
+    dados = _contrato_base(
+        imovel_identificacao="Sala Fixture Telefone Fixo",
         telefone_whatsapp=telefone,
     )
     contract_id = _criar(service_role_client, dados)

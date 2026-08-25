@@ -31,19 +31,25 @@ As migrations vivem em `docs/schemas/`:
 - `013_prazo_indeterminado.sql` — coluna `contracts.prazo_indeterminado` (contratos renovados por inércia, ex: cláusula 3.3 — `data_termino` fica só como valor histórico/decorativo). O Fluxo A do A4 (alerta de renovação) e a finalização automática (Migration 012) pulam esses contratos deliberadamente.
 - `014_dados_pagamento_no_a1.sql` — reverte parcialmente o escopo da Migration 006: `buscar_dados_inquilino` passa a incluir `banco_agencia`/`banco_conta`/`pix_chave` (o A2 nunca ganhou capacidade de conversar por texto, então "qual a chave Pix?" não tinha resposta em lugar nenhum). CPF/CNPJ do inquilino e do fiador continuam excluídos de propósito.
 - `015_agente_com_conversa_ativa.sql` — `agent_get_active_agent()`: devolve o agente dono de uma conversa multi-turno em aberto pra este contrato (se houver), para `rotear_mensagem` (app/orchestrator/orchestrator.py) pular o classificador e ir direto pro A3 quando já existir uma máquina de estados em andamento — evita que uma resposta ambígua no meio do fluxo (ex: "hein? que endereço?") seja desviada pra outro agente.
+- `016_decisao_renovacao.sql` — tipo de renovação escolhido pela gestora e tratamento de contratos com decisão pendente no vencimento.
+- `017_correcao_reajuste_tardio.sql` — permite aplicar reajuste confirmado depois da data exata do aniversário.
+- `018_decisao_gestora_renovacao.sql` — registra no alerta a decisão de renovação ou encerramento tomada pela gestora.
+- `018_garantia_aluguel_antecipado.sql` — adiciona aluguel antecipado às modalidades de garantia. O número duplicado é histórico; ambos os arquivos `018` devem ser aplicados.
+- `019_normalizacao_telefone.sql` — normaliza telefones brasileiros na resolução, cria unicidade equivalente para contratos ativos/pendentes e preserva `resolver_contrato_por_telefone(text) -> uuid|null` para o papel `anon`.
 
-**Rodar sempre nessa ordem** (001 antes do 002, e assim por diante — várias migrations posteriores dependem de funções/colunas criadas nas anteriores) via **SQL Editor** do dashboard: cole o conteúdo do arquivo, clique em Run, confirme "Success" antes de rodar o próximo.
+**Rodar sempre nessa ordem** (001 antes do 002, os dois arquivos 018 antes do 019 — várias migrations posteriores dependem de funções/colunas criadas nas anteriores) via **SQL Editor** do dashboard: cole o conteúdo do arquivo, clique em Run, confirme "Success" antes de rodar o próximo.
 
 Nota histórica: a primeira versão do `002` criava `staff_users` sem habilitar RLS — o próprio linter do SQL Editor pegou isso antes de rodar em produção. Corrigido com `alter table staff_users enable row level security;` logo após a criação da tabela. Se algum dia precisar recriar o projeto do zero, use a versão atual do arquivo (já com a correção).
 
 ## 3. Verificação pós-migration
 
-Checklist rápido depois de rodar as 15 migrations (001 a 015):
+Checklist rápido depois de rodar todas as migrations até a 019:
 
 - **Table Editor**: as 9 tabelas presentes (8 de negócio + `staff_users`), todas com RLS habilitado. `contracts` já com a coluna `prazo_indeterminado` (Migration 013).
 - **Storage**: bucket `contracts` existe e está marcado como **Private**.
 - **Database → Roles**: papéis `agente_ia` e `cron_batch` presentes.
 - **Database → Functions**: `is_staff`, `agent_contract_id`, `set_updated_at`, as funções RPC de escrita do agente (`agent_update_charge_status`, `agent_open_maintenance_ticket`, `agent_create_escalation`, `agent_log_message`, `agent_registrar_alerta_renovacao`, `agent_registrar_calculo_reajuste`, `agent_aplicar_reajuste`, `agent_finalizar_contrato`), as de leitura em lote do `cron_batch` (`cron_listar_charges_ativas`, `cron_listar_contratos_ativos`, `cron_listar_clausulas_financeiras`, `cron_listar_reajustes_para_aplicar`), e `resolver_contrato_por_telefone` (papel `anon`) presentes.
+- **Database → Indexes**: `contracts_telefone_normalizado_operacional_uidx` presente em `contracts`, cobrindo contratos ativos e pendentes.
 
 ## 4. Variáveis de ambiente (`.env`)
 

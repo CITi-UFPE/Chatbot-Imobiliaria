@@ -113,6 +113,37 @@ function isDataPassada(dataStr: string): boolean {
   return data < hoje;
 }
 
+function normalizarTelefoneParaCadastro(telefone: string): string | null {
+  const apresentado = telefone.trim();
+  if (!apresentado || !/^\+?[0-9(). -]+$/.test(apresentado)) return null;
+
+  const digitos = apresentado.replace(/\D/g, "");
+  let nacional: string;
+  if (digitos.length === 12 || digitos.length === 13) {
+    if (!digitos.startsWith("55")) return null;
+    nacional = digitos.slice(2);
+  } else if (digitos.length === 10 || digitos.length === 11) {
+    nacional = digitos;
+  } else {
+    return null;
+  }
+
+  const ddd = nacional.slice(0, 2);
+  const assinante = nacional.slice(2);
+  if (ddd.length !== 2 || ddd.startsWith("0")) return null;
+
+  if (assinante.length === 8 && /^[2-5]/.test(assinante)) {
+    return `+55${ddd}${assinante}`;
+  }
+  if (assinante.length === 8 && /^[6-9]/.test(assinante)) {
+    return `+55${ddd}9${assinante}`;
+  }
+  if (assinante.length === 9 && /^9[6-9]/.test(assinante)) {
+    return `+55${ddd}${assinante}`;
+  }
+  return null;
+}
+
 // Formato retornado pelo agente de extração (app/tools/contract_extraction.py,
 // modelo ExtracaoContratoResult em app/models/contract.py). Espelha o schema
 // SQL 1:1 — se o backend mudar de nome um campo, este tipo também precisa mudar.
@@ -536,7 +567,10 @@ function UploadWizard({
   const submitMutation = useMutation({
     mutationFn: async () => {
       if (!dados) throw new Error("Nenhum dado extraído para salvar");
-      if (!whatsapp.trim()) throw new Error("WhatsApp é obrigatório");
+      const whatsappNormalizado = normalizarTelefoneParaCadastro(whatsapp);
+      if (!whatsappNormalizado) {
+        throw new Error("Informe um WhatsApp brasileiro válido, com DDD e número.");
+      }
 
       const dadosVencido = isDataPassada(dados.data_termino);
 
@@ -578,13 +612,21 @@ function UploadWizard({
           data_termino: dataTerminoFinal,
           tipo_renovacao: tipoRenovacao,
           prazo_indeterminado: prazoIndeterminadoFinal,
-          telefone_whatsapp: whatsapp,
+          telefone_whatsapp: whatsappNormalizado,
           status: "pendente_confirmacao",
         })
         .select()
         .single();
 
-      if (contractError) throw contractError;
+      if (contractError) {
+        if (
+          contractError.code === "23505" &&
+          contractError.message.includes("contracts_telefone_normalizado_operacional_uidx")
+        ) {
+          throw new Error("Já existe um contrato ativo ou pendente com este WhatsApp.");
+        }
+        throw contractError;
+      }
 
       if (clausulas.length > 0) {
         const { error: clausulasError } = await supabase.from("contract_clauses").insert(

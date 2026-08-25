@@ -83,6 +83,12 @@ def service_role_client(_validar_ambiente_de_teste: None) -> Client:
 
 
 @pytest.fixture(scope="session")
+def anon_client(_validar_ambiente_de_teste: None) -> Client:
+    """Cliente anon do Supabase de teste, igual ao usado para resolver contrato."""
+    return create_client(os.environ["SUPABASE_TEST_URL"], os.environ["SUPABASE_TEST_ANON_KEY"])
+
+
+@pytest.fixture(scope="session")
 def agente_client_factory(_validar_ambiente_de_teste: None) -> Callable[[str | uuid.UUID], Client]:
     """Devolve `obter_client_agente`, a MESMA função que
     app/orchestrator/processar_mensagem.py usa em produção para autenticar
@@ -146,6 +152,7 @@ def _limpeza_defensiva_de_sessao(
     E depois da sessão inteira — cobre tanto "execução anterior crashou no
     meio" quanto o teardown normal desta execução."""
     telefones = [f"{PREFIXO_TELEFONE_FIXTURE}{n:03d}" for n in range(1, 20)]
+    telefones.extend(TELEFONES_FIXTURE_NORMALIZACAO)
     for telefone in telefones:
         limpar_dados_por_telefone(service_role_client, telefone)
 
