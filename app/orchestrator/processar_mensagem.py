@@ -33,6 +33,7 @@ import os
 from typing import Optional
 
 from supabase import create_client
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.orchestrator.agent_auth import obter_client_agente
 from app.orchestrator.orchestrator import (
@@ -40,11 +41,35 @@ from app.orchestrator.orchestrator import (
     rotear_comprovante_a2,
     rotear_mensagem,
 )
+from app.tools.whatsapp_client import enviar_texto, mascarar_telefone
 
 logger = logging.getLogger(__name__)
 
+# Retry da gravação de log no banco (agent_log_message) — mesma política
+# aplicada ao transporte HTTP do WhatsApp (app/tools/whatsapp_client.py):
+# poucas tentativas, backoff curto, nunca segurar demais um BackgroundTask
+# do webhook. A RPC é atômica (um INSERT só) — repetir uma tentativa que
+# falhou nunca duplica a linha no histórico.
+_LOG_RETRY_MAX_TENTATIVAS = 3
+_LOG_RETRY_ESPERA_MULTIPLICADOR_SEGUNDOS = 0.5
+_LOG_RETRY_ESPERA_MAX_SEGUNDOS = 4.0
 
-def processar_mensagem_recebida(payload: dict) -> Optional[str]:
+
+@retry(
+    stop=stop_after_attempt(_LOG_RETRY_MAX_TENTATIVAS),
+    wait=wait_exponential(
+        multiplier=_LOG_RETRY_ESPERA_MULTIPLICADOR_SEGUNDOS, max=_LOG_RETRY_ESPERA_MAX_SEGUNDOS
+    ),
+    reraise=True,
+)
+def _registrar_log_mensagem(client, params: dict) -> None:
+    """Grava uma linha em conversation_logs via agent_log_message, tentando
+    de novo automaticamente em caso de falha transitória (rede/banco
+    instável) antes de desistir e propagar a exceção pro chamador."""
+    client.rpc("agent_log_message", params).execute()
+
+
+def processar_mensagem_recebida(payload: dict, *, responder_via_whatsapp: bool = False) -> Optional[str]:
     """Processa uma mensagem do WhatsApp (real ou simulada).
 
     Devolve a resposta do agente (texto) quando há uma, ou uma mensagem de
@@ -53,6 +78,17 @@ def processar_mensagem_recebida(payload: dict) -> Optional[str]:
     BackgroundTasks); qualquer exceção aqui é tratada e logada, nunca deixada
     subir, porque depois que o webhook já respondeu 200 pra Meta uma exceção
     não tratada não chegaria a lugar nenhum além do log do processo mesmo.
+
+    `responder_via_whatsapp` (WA-04): quando True, a resposta não vazia dos
+    fluxos de texto/mídia também é enviada de volta ao remetente pelo
+    cliente WhatsApp real (app/tools/whatsapp_client.py). Só o webhook real
+    (app/api/routers/whatsapp.py) passa True; o chat simulado
+    (app/api/routers/dev_chat.py) mantém o padrão False — ele só precisa do
+    texto de retorno pra mostrar na tela, nunca deve disparar mensagem
+    externa de verdade. Cliques de botão da Fernanda (staff) nunca são
+    enviados de volta por este mecanismo, mesmo com a flag ligada: o
+    telefone do clique é o dela, não o do inquilino que deveria receber a
+    resposta.
     """
     try:
         entrada = payload["entry"][0]["changes"][0]["value"]
@@ -69,12 +105,34 @@ def processar_mensagem_recebida(payload: dict) -> Optional[str]:
         return _processar_clique_botao(mensagem)
 
     if tipo_mensagem in ("image", "document"):
-        return _processar_comprovante(mensagem)
+        return _processar_comprovante(mensagem, responder_via_whatsapp=responder_via_whatsapp)
 
-    return _processar_mensagem_texto(mensagem)
+    return _processar_mensagem_texto(mensagem, responder_via_whatsapp=responder_via_whatsapp)
 
 
-def _processar_mensagem_texto(mensagem: dict) -> Optional[str]:
+def _enviar_resposta_se_necessario(
+    telefone: Optional[str], resposta: Optional[str], responder_via_whatsapp: bool
+) -> None:
+    """Envia `resposta` ao remetente pelo WhatsApp real, quando solicitado.
+
+    Chamada só pelos fluxos de texto/mídia (mensagem de um inquilino) —
+    nunca pelo clique de botão da Fernanda. Falha no envio é logada e NUNCA
+    propagada: a esta altura os efeitos de negócio (RPC de log, resposta do
+    agente) já aconteceram e não devem ser desfeitos por um problema de
+    transporte (regra explícita da WA-04).
+    """
+    if not responder_via_whatsapp or not telefone or not resposta:
+        return
+    try:
+        enviar_texto(telefone, resposta)
+    except Exception:
+        logger.exception(
+            "Falha ao enviar resposta via WhatsApp para %s (efeitos do agente já concluídos).",
+            mascarar_telefone(telefone),
+        )
+
+
+def _processar_mensagem_texto(mensagem: dict, *, responder_via_whatsapp: bool = False) -> Optional[str]:
     """Fluxo original: mensagem de texto de um inquilino, classificada e
     roteada entre A1/A3/A5."""
     try:
@@ -88,7 +146,9 @@ def _processar_mensagem_texto(mensagem: dict) -> Optional[str]:
         contract_id = _resolver_contract_id(telefone)
     except Exception:
         logger.exception("Falha ao resolver contract_id para o telefone %s", telefone)
-        return "Erro ao resolver o contrato para esse telefone (ver logs)."
+        resposta = "Erro ao resolver o contrato para esse telefone (ver logs)."
+        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        return resposta
 
     if contract_id is None:
         logger.warning("Nenhum contrato ativo encontrado para o telefone %s", telefone)
@@ -96,33 +156,44 @@ def _processar_mensagem_texto(mensagem: dict) -> Optional[str]:
         # há contrato correspondente — depende do roteamento do orquestrador
         # também cobrir esse caso (hoje rotear_mensagem só é chamado quando
         # já existe um contrato resolvido).
-        return f"Nenhum contrato ativo encontrado para o telefone {telefone}."
+        resposta = f"Nenhum contrato ativo encontrado para o telefone {telefone}."
+        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        return resposta
 
     try:
         client = obter_client_agente(contract_id)
-        client.rpc(
-            "agent_log_message",
-            {"p_remetente": "inquilino", "p_agente_responsavel": None, "p_mensagem": texto},
-        ).execute()
+        _registrar_log_mensagem(
+            client, {"p_remetente": "inquilino", "p_agente_responsavel": None, "p_mensagem": texto}
+        )
 
         resposta, agente_responsavel = rotear_mensagem(contract_id, texto)
+    except Exception:
+        logger.exception("Falha ao processar mensagem para contrato %s", contract_id)
+        resposta = "Erro ao processar a mensagem (ver logs)."
+        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        return resposta
 
-        client.rpc(
-            "agent_log_message",
+    try:
+        _registrar_log_mensagem(
+            client,
             {
                 "p_remetente": "agente",
                 "p_agente_responsavel": agente_responsavel,
                 "p_mensagem": resposta,
             },
-        ).execute()
+        )
     except Exception:
-        logger.exception("Falha ao processar mensagem para contrato %s", contract_id)
-        return "Erro ao processar a mensagem (ver logs)."
+        # Diferente de uma falha ANTES de rotear_mensagem: aqui a resposta já
+        # foi calculada com sucesso — uma falha só no REGISTRO dela no
+        # histórico não deve descartar uma resposta válida (mesmo raciocínio
+        # já aplicado ao fluxo de comprovante, ver _processar_comprovante).
+        logger.exception("Falha ao registrar resposta do agente para contrato %s", contract_id)
 
+    _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
     return resposta
 
 
-def _processar_comprovante(mensagem: dict) -> Optional[str]:
+def _processar_comprovante(mensagem: dict, *, responder_via_whatsapp: bool = False) -> Optional[str]:
     """Mensagem de imagem/PDF — tratada como comprovante de pagamento (A2).
     O inquilino ainda é resolvido pelo telefone (é ele quem manda a mídia
     numa conversa do contrato dele), mas não passa pelo classificador de
@@ -149,41 +220,47 @@ def _processar_comprovante(mensagem: dict) -> Optional[str]:
             imagem_base64 = _baixar_midia_whatsapp(midia.get("id"))
         except Exception:
             logger.exception("Falha ao baixar mídia %s do WhatsApp.", midia.get("id"))
-            return (
+            resposta = (
                 "Recebemos seu arquivo, mas ainda não conseguimos baixá-lo automaticamente "
                 "(integração de mídia do WhatsApp Business pendente). Registrado para análise manual."
             )
+            _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+            return resposta
 
     try:
         contract_id = _resolver_contract_id(telefone)
     except Exception:
         logger.exception("Falha ao resolver contract_id para o telefone %s", telefone)
-        return "Erro ao resolver o contrato para esse telefone (ver logs)."
+        resposta = "Erro ao resolver o contrato para esse telefone (ver logs)."
+        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        return resposta
 
     if contract_id is None:
         logger.warning("Nenhum contrato ativo encontrado para o telefone %s", telefone)
-        return f"Nenhum contrato ativo encontrado para o telefone {telefone}."
+        resposta = f"Nenhum contrato ativo encontrado para o telefone {telefone}."
+        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        return resposta
 
     resposta, agente_responsavel = rotear_comprovante_a2(contract_id, imagem_base64, media_type)
 
     try:
         client = obter_client_agente(contract_id)
-        client.rpc(
-            "agent_log_message",
+        _registrar_log_mensagem(
+            client,
             {
                 "p_remetente": "inquilino",
                 "p_agente_responsavel": None,
                 "p_mensagem": "[comprovante recebido]",
             },
-        ).execute()
-        client.rpc(
-            "agent_log_message",
+        )
+        _registrar_log_mensagem(
+            client,
             {
                 "p_remetente": "agente",
                 "p_agente_responsavel": agente_responsavel,
                 "p_mensagem": resposta,
             },
-        ).execute()
+        )
     except Exception:
         # Diferente do fluxo de texto: uma falha no LOG do comprovante não
         # deve esconder do inquilino que o comprovante já foi processado
@@ -191,6 +268,7 @@ def _processar_comprovante(mensagem: dict) -> Optional[str]:
         # registro e segue devolvendo a resposta real.
         logger.exception("Falha ao registrar log de comprovante para contrato %s", contract_id)
 
+    _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
     return resposta
 
 

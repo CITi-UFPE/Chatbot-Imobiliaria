@@ -66,7 +66,7 @@ async def receber_mensagem(request: Request, background_tasks: BackgroundTasks) 
         if len(_mensagens_processadas) > _LIMITE_CACHE:
             _mensagens_processadas.clear()  # proteção simples contra crescimento ilimitado
 
-    background_tasks.add_task(processar_mensagem_recebida, payload)
+    background_tasks.add_task(processar_mensagem_recebida, payload, responder_via_whatsapp=True)
     return {"status": "recebido"}
 
 
