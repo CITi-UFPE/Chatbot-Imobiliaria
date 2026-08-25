@@ -12,8 +12,10 @@ precisa checar o kill switch explicitamente.
 WA-08: cobranças do cron e notificações proativas à gestão usam templates
 estruturados. Os botões definidos pela WA-06 continuam carregando IDs
 dinâmicos decodificáveis, agora como quick replies dos templates aprovados.
-Somente a segunda etapa provisória de "Só uma delas" permanece interativa
-livre até o novo fluxo de seleção direta ser aprovado e implementado.
+No pagamento combinado de exatamente uma cobrança de água e uma de
+aluguel, o template oferece as ações diretas "Cobre os dois", "Água paga"
+e "Aluguel pago". Casos com tipos repetidos permanecem para resolução
+manual na plataforma, sem botões e sem alterar previamente as cobranças.
 
 WA-06: `notificar_fernanda_comprovante` e
 `notificar_fernanda_pagamento_combinado` mandam botões nativos, com o `id`
@@ -26,19 +28,10 @@ rotear_clique_botao_a2). Por isso as duas funções agora exigem
 contract_id (e charge_id, quando aplicável) como parâmetro — antes não
 precisavam, porque só desenhavam rótulos de botão em texto.
 
-"Só uma delas" (pagamento combinado parcial) — um clique sozinho nunca diz
-QUAL charge foi de fato paga, então isso vira uma conversa em DUAS etapas
-em vez de um botão só:
-
-  1. `notificar_fernanda_pagamento_combinado` manda "Cobre os dois" e "Só
-     uma delas". Clicar em "Só uma delas" não confirma nem reverte
-     NENHUMA charge ainda — só decodifica pra ACAO_ESCOLHER_PARCIAL, que
-     dispara `notificar_pergunta_qual_charge_paga` (abaixo).
-  2. Essa segunda mensagem manda um botão por charge (ex: "Aluguel",
-     "Água") — cada um já sem ambiguidade nenhuma, porque o clique agora
-     diz exatamente qual charge é a paga. Só nesse ponto o webhook confirma
-     a charge escolhida e devolve as demais pra 'pendente' (ver
-     comprovante.py::marcar_apenas_uma_paga).
+O fluxo antigo de "Só uma delas" em duas etapas continua decodificável para
+mensagens enviadas antes desta alteração. Mensagens novas não emitem mais
+essa ação: os botões "Água paga" e "Aluguel pago" já carregam diretamente
+a cobrança confirmada e a que deve voltar a `pendente`.
 
 Continua sem suporte pra "Valor diverge" na mensagem de pagamento
 combinado especificamente: montar_button_id_divergente só aceita UM
@@ -48,13 +41,13 @@ ainda é resolvido escrevendo (ver corpo da mensagem).
 """
 
 import logging
+from datetime import date, datetime
 
 from app.agents.a2_cobranca.button_ids import (
     montar_button_id_combinado_parcial,
     montar_button_id_combinado_todos,
     montar_button_id_confirmar,
     montar_button_id_divergente,
-    montar_button_id_escolher_parcial,
 )
 from app.tools import whatsapp_client
 from app.tools.whatsapp_message_policy import (
@@ -74,8 +67,12 @@ _MAX_CHARGES_BOTAO_QUAL_PAGA = 3
 
 _TEMPLATE_COMPROVANTE_PARA_CONFERENCIA = "comprovante_para_conferencia"
 _TEMPLATE_PAGAMENTO_COMBINADO = "pagamento_combinado"
+_TEMPLATE_PAGAMENTO_COMBINADO_MANUAL = "pagamento_combinado_resolucao_manual"
 _TEMPLATE_COMPROVANTE_SEM_CORRESPONDENCIA = "comprovante_sem_correspondencia"
 _TEMPLATE_PAGAMENTO_CONFIRMADO = "pagamento_confirmado"
+
+_ORDEM_TIPOS = {"aluguel": 0, "agua": 1}
+_ROTULOS_TIPOS = {"aluguel": "Aluguel", "agua": "Água"}
 
 
 def _logar_falha_envio(operacao: str, telefone: str, erro: Exception) -> None:
@@ -119,6 +116,32 @@ def _formatar_valor_extraido(valor: float | None) -> str:
     if valor is None:
         return "não legível"
     return f"R$ {_formatar_valor(valor)}"
+
+
+def _rotulo_tipo(tipo: str) -> str:
+    return _ROTULOS_TIPOS.get(tipo, tipo.capitalize())
+
+
+def _chave_ordenacao_charge(charge: dict) -> tuple:
+    """Ordena sem depender da ordem devolvida pelo banco."""
+    return (
+        _ORDEM_TIPOS.get(charge.get("tipo"), len(_ORDEM_TIPOS)),
+        str(charge.get("data_vencimento") or ""),
+        str(charge.get("id") or ""),
+    )
+
+
+def _formatar_data_br(valor: object) -> str:
+    if isinstance(valor, datetime):
+        return valor.strftime("%d/%m/%Y")
+    if isinstance(valor, date):
+        return valor.strftime("%d/%m/%Y")
+    if isinstance(valor, str):
+        try:
+            return date.fromisoformat(valor[:10]).strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+    return "não informado"
 
 
 def enviar_mensagem_cobranca(
@@ -187,19 +210,11 @@ def notificar_fernanda_pagamento_combinado(
     data_extraida: str | None,
     charges_envolvidas: list[dict],
 ) -> None:
-    """Template com "Cobre os dois" / "Só uma delas" quando o comprovante
-    bate com a soma de duas ou mais charges.
+    """Template de uma água + um aluguel com três ações diretas.
 
-    "Cobre os dois": `id` montado por montar_button_id_combinado_todos com
-    TODAS as charge_ids envolvidas — sem ambiguidade, confirma tudo de
-    uma vez (button_ids.py já assume múltiplos charge_id separados por
-    vírgula nesse caso).
-
-    "Só uma delas": só inicia a 1ª etapa do fluxo de duas etapas (ver
-    docstring do módulo) — `id` montado por montar_button_id_escolher_parcial,
-    que NÃO confirma nem reverte nenhuma charge sozinho. Só quando a
-    segunda mensagem (notificar_pergunta_qual_charge_paga) for respondida
-    é que alguma charge muda de status.
+    A ordem recebida do banco não influencia os parâmetros nem os payloads.
+    A posição dos quick replies segue obrigatoriamente o cadastro na Meta:
+    "Cobre os dois", "Água paga", "Aluguel pago".
 
     Não existe "Valor diverge" nesta mensagem especificamente:
     montar_button_id_divergente só aceita UM charge_id — usá-lo aqui
@@ -207,13 +222,23 @@ def notificar_fernanda_pagamento_combinado(
     permanentemente em 'aguardando_confirmacao' (a ação "Valor diverge" já
     tem seu botão de verdade em notificar_fernanda_comprovante, onde há
     sempre uma única charge)."""
+    por_tipo = {c.get("tipo"): c for c in charges_envolvidas}
+    if len(charges_envolvidas) != 2 or set(por_tipo) != {"agua", "aluguel"}:
+        raise ValueError(
+            "Pagamento combinado automático exige exatamente uma cobrança de água "
+            "e uma de aluguel."
+        )
+
     destino = _destino_staff(telefone_fernanda)
+    charges_ordenadas = sorted(charges_envolvidas, key=_chave_ordenacao_charge)
     linhas_charges = "\n".join(
-        f"- {c['tipo'].capitalize()}: R$ {_formatar_valor(c['valor_esperado'])}"
-        for c in charges_envolvidas
+        f"- {_rotulo_tipo(c['tipo'])}: R$ {_formatar_valor(c['valor_esperado'])}"
+        for c in charges_ordenadas
     )
-    soma = sum(c["valor_esperado"] for c in charges_envolvidas)
-    charge_ids = [c["id"] for c in charges_envolvidas]
+    soma = sum(c["valor_esperado"] for c in charges_ordenadas)
+    charge_ids = [c["id"] for c in charges_ordenadas]
+    charge_agua = por_tipo["agua"]
+    charge_aluguel = por_tipo["aluguel"]
     mensagem = MensagemTemplate(
         nome=_TEMPLATE_PAGAMENTO_COMBINADO,
         parametros=(
@@ -229,7 +254,14 @@ def notificar_fernanda_pagamento_combinado(
                 payload=montar_button_id_combinado_todos(contract_id, charge_ids)
             ),
             BotaoTemplateQuickReply(
-                payload=montar_button_id_escolher_parcial(contract_id, charge_ids)
+                payload=montar_button_id_combinado_parcial(
+                    contract_id, charge_agua["id"], [charge_aluguel["id"]]
+                )
+            ),
+            BotaoTemplateQuickReply(
+                payload=montar_button_id_combinado_parcial(
+                    contract_id, charge_aluguel["id"], [charge_agua["id"]]
+                )
             ),
         ),
     )
@@ -240,15 +272,51 @@ def notificar_fernanda_pagamento_combinado(
     )
 
 
+def notificar_fernanda_pagamento_combinado_manual(
+    telefone_fernanda: str,
+    nome_inquilino: str,
+    imovel_identificacao: str,
+    valor_extraido: float | None,
+    data_extraida: str | None,
+    charges_em_aberto: list[dict],
+) -> None:
+    """Solicita resolução na plataforma, sem botões nem mudança de status."""
+    destino = _destino_staff(telefone_fernanda)
+    charges_ordenadas = sorted(charges_em_aberto, key=_chave_ordenacao_charge)
+    linhas_charges = "\n".join(
+        (
+            f"- {_rotulo_tipo(c['tipo'])} | vencimento "
+            f"{_formatar_data_br(c.get('data_vencimento'))} | "
+            f"R$ {_formatar_valor(c['valor_esperado'])} | ID {c['id']}"
+        )
+        for c in charges_ordenadas
+    )
+    mensagem = MensagemTemplate(
+        nome=_TEMPLATE_PAGAMENTO_COMBINADO_MANUAL,
+        parametros=(
+            nome_inquilino,
+            imovel_identificacao,
+            _formatar_valor_extraido(valor_extraido),
+            _formatar_data_br(data_extraida) if data_extraida else "não legível",
+            linhas_charges,
+        ),
+    )
+    _enviar_com_log(
+        "notificar_fernanda_pagamento_combinado_manual",
+        destino,
+        lambda: enviar_saida(destino, mensagem),
+    )
+
+
 def notificar_pergunta_qual_charge_paga(
     telefone_fernanda: str, contract_id: str, charges: list[dict]
 ) -> None:
-    """2ª etapa do fluxo de pagamento combinado parcial (WA-06) — disparada
-    só depois que a Fernanda já apertou "Só uma delas" na 1ª mensagem (ver
-    notificar_fernanda_pagamento_combinado). Um botão por charge (`charges`
-    é `[{"id":..., "tipo":...}, ...]`), com título = tipo capitalizado (ex:
-    "Aluguel", "Água") — cada clique agora é inequívoco: diz exatamente
-    qual charge foi a paga.
+    """Compatibilidade com a 2ª etapa de mensagens antigas "Só uma delas".
+
+    Mensagens novas já trazem os botões específicos no template inicial.
+    Este caminho continua disponível para um callback anterior à mudança.
+    Um botão por charge (`charges` é `[{"id":..., "tipo":...}, ...]`)
+    identifica sem ambiguidade qual cobrança foi paga.
 
     `id` de cada botão é montado por montar_button_id_combinado_parcial,
     com a PRÓPRIA charge daquele botão como paga e todas as outras

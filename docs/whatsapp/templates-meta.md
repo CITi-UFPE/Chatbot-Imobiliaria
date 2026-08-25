@@ -167,11 +167,15 @@ Charges em aberto que juntas somam esse valor (R$ {{5}}):
 {{6}}
 ```
 
-**Botões (quick reply):** "Cobre os dois" / "Só uma delas" — payloads
-dinâmicos via `montar_button_id_combinado_todos` e
-`montar_button_id_escolher_parcial`. O primeiro clique em "Só uma delas"
-não altera nenhuma charge; a seleção atual em duas etapas será substituída
-somente depois da aprovação do plano específico do novo fluxo.
+**Botões (quick reply), nesta ordem:** "Cobre os dois" / "Água paga" /
+"Aluguel pago". O primeiro usa `montar_button_id_combinado_todos`; os dois
+seguintes usam `montar_button_id_combinado_parcial`, com a cobrança indicada
+como paga e a outra como restante. A ordem é fixa e deve ser idêntica no
+WhatsApp Manager e no código.
+
+Este template só é usado quando existem exatamente duas cobranças abertas:
+uma de água e uma de aluguel. Tipos repetidos e conjuntos com três ou mais
+cobranças usam `pagamento_combinado_resolucao_manual`, sem botões.
 
 **Variáveis:**
 1. Nome do inquilino
@@ -264,7 +268,7 @@ WA-05 e parâmetros separados pela WA-08.
 | Template | Destinatário | Variável de ambiente |
 |---|---|---|
 | `aviso_vencimento`, `aviso_atraso`, `aviso_atraso_severo` | Inquilino | `contrato.telefone_whatsapp` (não é uma env var — vem do registro do contrato) |
-| `comprovante_para_conferencia`, `pagamento_combinado`, `comprovante_sem_correspondencia` | Fernanda (staff) | `WHATSAPP_STAFF_PHONE_NUMBER` |
+| `comprovante_para_conferencia`, `pagamento_combinado`, `comprovante_sem_correspondencia`, `pagamento_combinado_resolucao_manual` | Fernanda (staff) | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `alerta_contratual` | Equipe (Domingos/Fernanda) | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `escalonamento_equipe` | Equipe | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `retomada_atendimento`, `pagamento_confirmado` | Inquilino | `contrato.telefone_whatsapp` |
@@ -344,3 +348,48 @@ envio gerencial por template e destino de staff configurado.
 **Status operacional dos templates 8–10:** especificados no repositório, mas
 o código não presume cadastro, submissão ou aprovação na Meta. Essas etapas
 continuam externas.
+
+---
+
+## 11. `pagamento_combinado_resolucao_manual`
+
+**Categoria:** Utility · **Idioma:** pt_BR · **Sem botões**
+
+**Corpo sugerido:**
+```
+Comprovante recebido — resolução manual necessária
+
+Inquilino: {{1}}
+Imóvel: {{2}}
+Valor identificado: {{3}}
+Data identificada: {{4}}
+
+Cobranças em aberto:
+{{5}}
+
+Não foi possível distinguir automaticamente a cobrança paga porque há mais de uma cobrança do mesmo tipo. Acesse a plataforma, localize a cobrança correta, informe a data e o valor pagos e marque-a como paga.
+```
+
+**Variáveis:**
+1. Nome do inquilino.
+2. Identificação do imóvel.
+3. Valor identificado no comprovante, formatado como `R$ 1.500,00`, ou
+   `não legível`.
+4. Data identificada no comprovante, no formato `dd/mm/aaaa`, ou
+   `não legível`.
+5. Lista determinística das cobranças em aberto, ordenada por tipo,
+   vencimento e ID. Cada linha deve conter tipo, vencimento, valor e ID da
+   cobrança.
+
+**Exemplo:** `João Pereira`, `Apto 302, Ed. X`, `R$ 1.500,00`,
+`15/09/2026`,
+`- Aluguel | vencimento 10/09/2026 | R$ 1.200,00 | ID charge-001\n- Aluguel | vencimento 10/10/2026 | R$ 1.200,00 | ID charge-002`
+
+**Consumidor:**
+`app/agents/a2_cobranca/notificacao.py::notificar_fernanda_pagamento_combinado_manual`.
+Nesse caminho, nenhuma cobrança é marcada como
+`aguardando_confirmacao`; a gestão resolve pela plataforma.
+
+**Status operacional:** consumido pelo código, mas sem cadastro, submissão
+ou aprovação presumidos na Meta. A ativação real depende dessas etapas
+externas.

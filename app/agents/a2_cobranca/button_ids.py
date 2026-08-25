@@ -17,7 +17,8 @@ decodificar_button_id nunca lança — devolve None pra qualquer coisa que não
 reconheça, porque um clique de botão que chega maltormado não pode virar uma
 exceção não tratada no meio do processamento do webhook.
 
-Pagamento combinado parcial ("Só uma delas") — fluxo em DUAS etapas, porque
+Compatibilidade com pagamento combinado parcial antigo ("Só uma delas") —
+fluxo em DUAS etapas, porque
 um clique sozinho nunca diz QUAL charge foi de fato paga:
 
   1. ACAO_ESCOLHER_PARCIAL: primeiro clique ("Só uma delas" na mensagem
@@ -70,8 +71,11 @@ def montar_button_id_combinado_todos(contract_id: str, charge_ids: list[str]) ->
 
 
 def montar_button_id_escolher_parcial(contract_id: str, charge_ids: list[str]) -> str:
-    """Botão "Só uma delas" (1ª etapa) — ainda não sabe qual charge foi
-    paga, só sabe quais estão em jogo. Ver docstring do módulo."""
+    """ID legado para botões "Só uma delas" já enviados.
+
+    Mensagens novas usam `montar_button_id_combinado_parcial` diretamente,
+    mas este construtor e sua decodificação permanecem durante a transição.
+    """
     return _SEPARADOR_CAMPO.join(
         [ACAO_ESCOLHER_PARCIAL, contract_id, _SEPARADOR_LISTA.join(charge_ids)]
     )

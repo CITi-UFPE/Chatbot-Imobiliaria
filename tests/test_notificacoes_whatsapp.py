@@ -209,7 +209,7 @@ class TestNotificarFernandaPagamentoCombinado:
             "R$ 2.300,00",
             "2026-07-17",
             "2.300,00",
-            "- Aluguel: R$ 2.200,00\n- Agua: R$ 100,00",
+            "- Aluguel: R$ 2.200,00\n- Água: R$ 100,00",
         ]
 
         decod_todos = button_ids.decodificar_button_id(botoes[0])
@@ -217,10 +217,15 @@ class TestNotificarFernandaPagamentoCombinado:
         assert decod_todos.contract_id == self.CONTRACT_ID
         assert decod_todos.charge_ids == ["charge-aluguel", "charge-agua"]
 
-        decod_escolher = button_ids.decodificar_button_id(botoes[1])
-        assert decod_escolher.acao == button_ids.ACAO_ESCOLHER_PARCIAL
-        assert decod_escolher.contract_id == self.CONTRACT_ID
-        assert decod_escolher.charge_ids == ["charge-aluguel", "charge-agua"]
+        decod_agua = button_ids.decodificar_button_id(botoes[1])
+        assert decod_agua.acao == button_ids.ACAO_COMBINADO_PARCIAL
+        assert decod_agua.contract_id == self.CONTRACT_ID
+        assert decod_agua.charge_ids == ["charge-agua", "charge-aluguel"]
+
+        decod_aluguel = button_ids.decodificar_button_id(botoes[2])
+        assert decod_aluguel.acao == button_ids.ACAO_COMBINADO_PARCIAL
+        assert decod_aluguel.contract_id == self.CONTRACT_ID
+        assert decod_aluguel.charge_ids == ["charge-aluguel", "charge-agua"]
 
     def test_falha_do_cliente_propaga(self, monkeypatch):
         def enviar_template_com_falha(*args, **kwargs):
