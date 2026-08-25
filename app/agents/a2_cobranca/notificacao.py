@@ -9,14 +9,15 @@ whatsapp_client.enviar_texto/enviar_template/enviar_botoes já caem em modo
 simulado sozinhos (logam e devolvem sem chamada HTTP), então nada aqui
 precisa checar o kill switch explicitamente.
 
-WA-08: `enviar_mensagem_cobranca` recebe agora um template estruturado por
-estágio. Os fluxos de comprovante abaixo mantêm as assinaturas, botões e IDs
-definidos pela WA-06 e serão integrados ao transporte de templates depois da
-resolução do cherry-pick.
+WA-08: cobranças do cron e notificações proativas à gestão usam templates
+estruturados. Os botões definidos pela WA-06 continuam carregando IDs
+dinâmicos decodificáveis, agora como quick replies dos templates aprovados.
+Somente a segunda etapa provisória de "Só uma delas" permanece interativa
+livre até o novo fluxo de seleção direta ser aprovado e implementado.
 
 WA-06: `notificar_fernanda_comprovante` e
-`notificar_fernanda_pagamento_combinado` agora mandam botões nativos de
-verdade (`whatsapp_client.enviar_botoes`), com o `id` de cada botão
+`notificar_fernanda_pagamento_combinado` mandam botões nativos, com o `id`
+de cada botão
 montado exclusivamente pelas funções `montar_button_id_*` de
 app/agents/a2_cobranca/button_ids.py — nunca um id construído à mão aqui.
 Isso é o que garante que o clique, do lado do webhook, é reconhecido por
@@ -56,7 +57,12 @@ from app.agents.a2_cobranca.button_ids import (
     montar_button_id_escolher_parcial,
 )
 from app.tools import whatsapp_client
-from app.tools.whatsapp_message_policy import MensagemTemplate, enviar_saida
+from app.tools.whatsapp_message_policy import (
+    BotaoTemplateQuickReply,
+    MensagemTemplate,
+    decidir_saida_para_contrato,
+    enviar_saida,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +72,12 @@ logger = logging.getLogger(__name__)
 # precisa cair pra texto livre (ver docstring da função).
 _MAX_CHARGES_BOTAO_QUAL_PAGA = 3
 
-# Template genérico para as mensagens de cobrança do cron (D-5/D0/D+5/D+10/
-# D+15) — um único parâmetro com o texto já montado por mensagens.py (regra
-# desta task: não reescrever esse texto). O catálogo
-# (docs/whatsapp/templates-meta.md) desenha 3 templates por estágio, com
-# variáveis próprias (nome, valor, multa, juros...) — migrar pra eles exige
-# expor esses campos separadamente em vez do texto já pronto que
-# enviar_mensagem_cobranca recebe hoje; fica pra quando mensagens.py for
-# reestruturado (WA-08).
+_TEMPLATE_COMPROVANTE_PARA_CONFERENCIA = "comprovante_para_conferencia"
+_TEMPLATE_PAGAMENTO_COMBINADO = "pagamento_combinado"
+_TEMPLATE_COMPROVANTE_SEM_CORRESPONDENCIA = "comprovante_sem_correspondencia"
+_TEMPLATE_PAGAMENTO_CONFIRMADO = "pagamento_confirmado"
+
+
 def _logar_falha_envio(operacao: str, telefone: str, erro: Exception) -> None:
     """Log explícito de falha, com destino mascarado — chamado ANTES de
     repropagar a exceção em toda função deste módulo, pra nunca depender só
@@ -97,6 +101,25 @@ def _enviar_com_log(operacao: str, telefone: str, enviar) -> None:
     except Exception as erro:
         _logar_falha_envio(operacao, telefone, erro)
         raise
+
+
+def _destino_staff(telefone: str) -> str:
+    """Resolve o destino real sem exigir configuração no modo simulado."""
+    if telefone or not whatsapp_client.envio_ativo():
+        return telefone
+    return whatsapp_client.telefone_staff()
+
+
+def _formatar_valor(valor: float) -> str:
+    formato_internacional = f"{valor:,.2f}"
+    return formato_internacional.translate(str.maketrans({",": ".", ".": ","}))
+
+
+def _formatar_valor_extraido(valor: float | None) -> str:
+    if valor is None:
+        return "não legível"
+    return f"R$ {_formatar_valor(valor)}"
+
 
 def enviar_mensagem_cobranca(
     telefone_whatsapp: str,
@@ -122,32 +145,36 @@ def notificar_fernanda_comprovante(
     valor_esperado: float,
     nota_deteccao_automatica: str | None = None,
 ) -> None:
-    """DM para a Fernanda (não o grupo) com os dois botões nativos
-    Confirmar / Valor diverge (WA-06: interactive message de verdade — o
-    `id` de cada botão é montado por button_ids.montar_button_id_*, único
-    jeito de o clique ser reconhecido depois por decodificar_button_id).
-    `nota_deteccao_automatica` é usada quando havia mais de uma charge em
-    aberto e o sistema resolveu qual delas sozinho, por valor batendo
-    dentro da margem — ver comprovante.py:_resolver_charge_e_notificar.
-    Disparada de dentro do webhook (comprovante recebido)."""
-    nota = f"\n\n{nota_deteccao_automatica}" if nota_deteccao_automatica else ""
-    corpo = (
-        f"Novo comprovante recebido\n\n"
-        f"Inquilino: {nome_inquilino}\n"
-        f"Imóvel: {imovel_identificacao}\n\n"
-        f"Valor identificado: R$ {valor_extraido if valor_extraido is not None else 'não legível'}\n"
-        f"Data identificada: {data_extraida or 'não legível'}\n"
-        f"Valor esperado (contrato): R$ {valor_esperado:.2f}"
-        f"{nota}"
+    """Template gerencial com quick replies Confirmar / Valor diverge."""
+    destino = _destino_staff(telefone_fernanda)
+    criterio = (
+        "Correspondência identificada automaticamente pelo valor"
+        if nota_deteccao_automatica
+        else "Única cobrança em aberto"
     )
-    botoes = [
-        {"id": montar_button_id_confirmar(contract_id, charge_id), "titulo": "Confirmar"},
-        {"id": montar_button_id_divergente(contract_id, charge_id), "titulo": "Valor diverge"},
-    ]
+    mensagem = MensagemTemplate(
+        nome=_TEMPLATE_COMPROVANTE_PARA_CONFERENCIA,
+        parametros=(
+            nome_inquilino,
+            imovel_identificacao,
+            _formatar_valor_extraido(valor_extraido),
+            data_extraida or "não legível",
+            _formatar_valor(valor_esperado),
+            criterio,
+        ),
+        botoes=(
+            BotaoTemplateQuickReply(
+                payload=montar_button_id_confirmar(contract_id, charge_id)
+            ),
+            BotaoTemplateQuickReply(
+                payload=montar_button_id_divergente(contract_id, charge_id)
+            ),
+        ),
+    )
     _enviar_com_log(
         "notificar_fernanda_comprovante",
-        telefone_fernanda,
-        lambda: whatsapp_client.enviar_botoes(telefone_fernanda, corpo, botoes),
+        destino,
+        lambda: enviar_saida(destino, mensagem),
     )
 
 
@@ -160,9 +187,8 @@ def notificar_fernanda_pagamento_combinado(
     data_extraida: str | None,
     charges_envolvidas: list[dict],
 ) -> None:
-    """DM com 2 botões nativos ("Cobre os dois" / "Só uma delas") quando o
-    valor do comprovante bate com a SOMA de duas (ou mais) charges em
-    aberto.
+    """Template com "Cobre os dois" / "Só uma delas" quando o comprovante
+    bate com a soma de duas ou mais charges.
 
     "Cobre os dois": `id` montado por montar_button_id_combinado_todos com
     TODAS as charge_ids envolvidas — sem ambiguidade, confirma tudo de
@@ -175,44 +201,42 @@ def notificar_fernanda_pagamento_combinado(
     segunda mensagem (notificar_pergunta_qual_charge_paga) for respondida
     é que alguma charge muda de status.
 
-    Ainda NÃO tem "Valor diverge" NESTA mensagem especificamente:
+    Não existe "Valor diverge" nesta mensagem especificamente:
     montar_button_id_divergente só aceita UM charge_id — usá-lo aqui
     marcaria uma única charge como divergente e deixaria a(s) outra(s)
     permanentemente em 'aguardando_confirmacao' (a ação "Valor diverge" já
     tem seu botão de verdade em notificar_fernanda_comprovante, onde há
-    sempre uma única charge). Esse caso (valor que na real não bate com
-    nada) o corpo da mensagem orienta a Fernanda a resolver manualmente —
-    sem alterar nenhuma charge automaticamente. Disparada de dentro do
-    webhook (comprovante recebido)."""
+    sempre uma única charge)."""
+    destino = _destino_staff(telefone_fernanda)
     linhas_charges = "\n".join(
-        f"- {c['tipo'].capitalize()}: R$ {c['valor_esperado']:.2f}" for c in charges_envolvidas
+        f"- {c['tipo'].capitalize()}: R$ {_formatar_valor(c['valor_esperado'])}"
+        for c in charges_envolvidas
     )
     soma = sum(c["valor_esperado"] for c in charges_envolvidas)
-    corpo = (
-        f"Comprovante recebido — possível pagamento combinado\n\n"
-        f"Inquilino: {nome_inquilino}\n"
-        f"Imóvel: {imovel_identificacao}\n\n"
-        f"Valor identificado: R$ {valor_extraido if valor_extraido is not None else 'não legível'}\n"
-        f"Data identificada: {data_extraida or 'não legível'}\n\n"
-        f"Charges em aberto que juntas somam esse valor (R$ {soma:.2f}):\n{linhas_charges}\n\n"
-        f"Se o valor na real não bater com nada disso, responda por aqui pra resolver "
-        f"manualmente — não confirme automaticamente nesse caso."
-    )
     charge_ids = [c["id"] for c in charges_envolvidas]
-    botoes = [
-        {
-            "id": montar_button_id_combinado_todos(contract_id, charge_ids),
-            "titulo": "Cobre os dois",
-        },
-        {
-            "id": montar_button_id_escolher_parcial(contract_id, charge_ids),
-            "titulo": "Só uma delas",
-        },
-    ]
+    mensagem = MensagemTemplate(
+        nome=_TEMPLATE_PAGAMENTO_COMBINADO,
+        parametros=(
+            nome_inquilino,
+            imovel_identificacao,
+            _formatar_valor_extraido(valor_extraido),
+            data_extraida or "não legível",
+            _formatar_valor(soma),
+            linhas_charges,
+        ),
+        botoes=(
+            BotaoTemplateQuickReply(
+                payload=montar_button_id_combinado_todos(contract_id, charge_ids)
+            ),
+            BotaoTemplateQuickReply(
+                payload=montar_button_id_escolher_parcial(contract_id, charge_ids)
+            ),
+        ),
+    )
     _enviar_com_log(
         "notificar_fernanda_pagamento_combinado",
-        telefone_fernanda,
-        lambda: whatsapp_client.enviar_botoes(telefone_fernanda, corpo, botoes),
+        destino,
+        lambda: enviar_saida(destino, mensagem),
     )
 
 
@@ -282,36 +306,54 @@ def notificar_fernanda_sem_match(
 ) -> None:
     """Usada quando o valor do comprovante não bate (dentro da margem) com
     nenhuma charge individual nem com a soma delas. Sem botões — Fernanda
-    resolve pelo canal normal. Disparada de dentro do webhook: texto livre."""
+    resolve pela plataforma. Como o destinatário é staff, sempre usa
+    template."""
+    destino = _destino_staff(telefone_fernanda)
     linhas_charges = (
-        "\n".join(f"- {c['tipo'].capitalize()}: R$ {c['valor_esperado']:.2f}" for c in charges_em_aberto)
+        "\n".join(
+            f"- {c['tipo'].capitalize()}: R$ {_formatar_valor(c['valor_esperado'])}"
+            for c in charges_em_aberto
+        )
         if charges_em_aberto
         else "(nenhuma charge em aberto encontrada para este contrato)"
     )
-    texto = (
-        f"Comprovante recebido — não foi possível identificar automaticamente a que se refere\n\n"
-        f"Inquilino: {nome_inquilino}\n"
-        f"Imóvel: {imovel_identificacao}\n\n"
-        f"Valor identificado: R$ {valor_extraido if valor_extraido is not None else 'não legível'}\n"
-        f"Data identificada: {data_extraida or 'não legível'}\n\n"
-        f"Charges em aberto no contrato:\n{linhas_charges}\n\n"
-        f"O valor não bate com nenhuma delas nem com a soma — resolver manualmente."
+    mensagem = MensagemTemplate(
+        nome=_TEMPLATE_COMPROVANTE_SEM_CORRESPONDENCIA,
+        parametros=(
+            nome_inquilino,
+            imovel_identificacao,
+            _formatar_valor_extraido(valor_extraido),
+            data_extraida or "não legível",
+            linhas_charges,
+        ),
     )
     _enviar_com_log(
         "notificar_fernanda_sem_match",
-        telefone_fernanda,
-        lambda: whatsapp_client.enviar_texto(telefone_fernanda, texto),
+        destino,
+        lambda: enviar_saida(destino, mensagem),
     )
 
 
-def responder_confirmacao_pagamento(telefone_whatsapp: str, nome_inquilino: str) -> None:
+def responder_confirmacao_pagamento(
+    client_agente,
+    telefone_whatsapp: str,
+    nome_inquilino: str,
+) -> None:
     """Resposta automática ao inquilino quando Fernanda confirma o
-    pagamento — disparada de dentro do processamento do clique de botão
-    dela (webhook): texto livre, mesmo padrão de resposta ao inquilino da
-    WA-04."""
+    pagamento. Texto livre somente com janela comprovadamente aberta; caso
+    contrário usa o template específico ``pagamento_confirmado``."""
     texto = f"Recebemos seu comprovante, {nome_inquilino}. Pagamento confirmado, obrigado!"
+    saida = decidir_saida_para_contrato(
+        client_agente,
+        reativa=True,
+        texto=texto,
+        template=MensagemTemplate(
+            nome=_TEMPLATE_PAGAMENTO_CONFIRMADO,
+            parametros=(nome_inquilino,),
+        ),
+    )
     _enviar_com_log(
         "responder_confirmacao_pagamento",
         telefone_whatsapp,
-        lambda: whatsapp_client.enviar_texto(telefone_whatsapp, texto),
+        lambda: enviar_saida(telefone_whatsapp, saida),
     )

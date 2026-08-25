@@ -272,8 +272,8 @@ Os templates já descritos em `docs/whatsapp/templates-meta.md` são:
 | `aviso_vencimento` | A2 D-5/D0 | corpo e parâmetros documentados |
 | `aviso_atraso` | A2 D+5/D+10 | corpo e parâmetros documentados |
 | `aviso_atraso_severo` | A2 D+15 | corpo e parâmetros documentados |
-| `comprovante_para_conferencia` | Fernanda confere comprovante | documentado, depende da integração da WA-06 |
-| `pagamento_combinado` | Fernanda confere várias charges | documentado, depende da integração da WA-06 |
+| `comprovante_para_conferencia` | Fernanda confere comprovante | integrado como template com quick replies após a WA-06 |
+| `pagamento_combinado` | Fernanda confere várias charges | integrado como template com quick replies após a WA-06 |
 | `alerta_contratual` | renovação/reajuste para a equipe | documentado e já consumido pela WA-09 |
 | `escalonamento_equipe` | A5 avisa a equipe | documentado, transporte depende da WA-05 |
 
@@ -294,19 +294,17 @@ parâmetros no catálogo e fazer os consumidores enviarem a estrutura correta.
 O cadastro, a submissão e a aprovação continuam sendo feitos na plataforma da
 Meta.
 
-Depois da WA-06, também será necessário verificar como os botões de
-`comprovante_para_conferencia` e `pagamento_combinado` foram implementados.
-Uma mensagem interativa livre enviada por `enviar_botoes` não é automaticamente
-equivalente a um template aprovado para uso fora da janela. Como o destino é a
-gerência e a decisão deste plano é sempre usar template nesse canal, o desenho
-final deve usar templates aprovados com botões ou documentar uma alternativa
-compatível com a Meta.
+A integração com a WA-06 ampliou `MensagemTemplate` e `enviar_template` para
+transportar payloads quick reply dinâmicos. Assim,
+`comprovante_para_conferencia` e `pagamento_combinado` deixaram de depender de
+`enviar_botoes` na notificação inicial à gestão. O formato segue os componentes
+de botão dos templates da Meta e mantém a ordem cadastrada no catálogo.
 
 ## 5. Situação verificada das dependências
 
-A verificação foi feita no branch atual `feat/template_texto_livre`, apontando
-para o mesmo commit de `develop` no momento da análise, e também nas branches
-remotas `feat/wa-*` disponíveis no GitHub.
+A verificação inicial foi feita em `feat/template_texto_livre`. A integração
+final foi realizada em `feat/integracao-wa06-wa08`, criada a partir da
+`develop` que já continha a WA-06.
 
 ### 5.1. WA-04 — implementada
 
@@ -346,40 +344,25 @@ provisórios da WA-05 nos fluxos estáveis:
 - A5 passou a fornecer protocolo, motivo e descrição separadamente;
 - respostas da WA-04 passam pela política de janela.
 
-### 5.4. WA-06 — ainda não implementada, mas não bloqueia o núcleo da janela
+### 5.4. WA-06 — implementada e integrada
 
-Não existe branch remota `feat/wa-06-*` na consulta realizada. O código atual
-também mostra que:
+A WA-06 foi incorporada à `develop` no merge `56c9b86` e integrada à WA-08
+na branch `feat/integracao-wa06-wa08`. A união preservou:
 
-- as notificações de comprovante ainda não chamam `enviar_botoes`;
-- os helpers de IDs existem, mas não estão ligados ao envio;
-- não há a suíte de ida e volta dos botões prevista na WA-06.
+- montagem e decodificação dos IDs dos botões;
+- roteamento dos cliques pelo webhook;
+- confirmação individual, divergência e pagamento combinado;
+- fallback conservador do pagamento parcial;
+- política central de texto/template e consulta da janela.
 
-Por que o plano original coloca WA-06 antes da WA-08:
+As notificações iniciais à gestão agora usam templates com quick replies. A
+confirmação enviada ao inquilino consulta a janela do contrato e usa
+`pagamento_confirmado` quando texto livre não estiver autorizado.
 
-- a WA-06 altera o mesmo arquivo de notificação do A2;
-- a confirmação de pagamento disparada depois do clique da Fernanda pode
-  gerar uma mensagem para o inquilino, que também precisa respeitar a janela;
-- implementar WA-08 primeiro pode fazer a WA-06 posterior restaurar uma
-  chamada direta ou sobrescrever uma assinatura, contornando a política
-  central;
-- só depois da WA-06 o fluxo completo de comprovante estará em sua forma
-  final, permitindo verificar todos os envios do A2 de ponta a ponta.
-
-Contudo, os botões enviados para a Fernanda são mensagens interativas e não
-são necessários para calcular a janela do inquilino nem para garantir que o
-cron de cobrança use template. Portanto:
-
-- WA-06 **não bloqueia** a criação da política, da RPC, do cálculo de 24 horas
-  ou do mapeamento dos templates de cobrança;
-- WA-06 é uma dependência de integração e de ordem de merge, não uma
-  dependência lógica do núcleo da WA-08;
-- se WA-08 for implementada antes, será obrigatório revisar a futura WA-06
-  para garantir que nenhum envio ao inquilino contorne a política.
-
-Decisão atual: implementar o núcleo e os fluxos estáveis da WA-08 agora. Após
-a WA-06, integrar e auditar apenas os caminhos finais de comprovante, botões e
-confirmação de pagamento.
+A segunda etapa antiga de `Só uma delas` permanece provisoriamente como a
+única exceção gerencial interativa livre. Sua substituição foi separada no
+documento `plano-fluxo-botoes-comprovante.md` e depende de aprovação antes de
+ser implementada.
 
 ## 6. Arquitetura técnica proposta
 
@@ -507,9 +490,7 @@ destino: WHATSAPP_STAFF_PHONE_NUMBER
 
 Essa saída será marcada como proativa e seguirá direto para template.
 
-## 7. Arquivos que deverão ser alterados na implementação futura
-
-Lista prevista, sujeita às assinaturas finais de WA-05/WA-06:
+## 7. Arquivos alterados na implementação
 
 - `app/tools/whatsapp_message_policy.py` — novo módulo central;
 - `docs/schemas/020_whatsapp_janela_atendimento.sql` — nova RPC;
@@ -518,8 +499,8 @@ Lista prevista, sujeita às assinaturas finais de WA-05/WA-06:
 - `app/agents/a2_cobranca/mensagens.py` — montar parâmetros de template sem
   alterar os textos existentes;
 - `app/agents/a2_cobranca/cobranca.py` — marcar cron como proativo;
-- `app/agents/a2_cobranca/notificacao.py` — integrar a saída central depois de
-  WA-05/WA-06;
+- `app/agents/a2_cobranca/notificacao.py` — integrar cron, comprovantes,
+  botões e confirmação à saída central;
 - `app/agents/a5_escalonamento/notificacao.py` e possivelmente
   `escalonamento.py` — template estruturado da equipe;
 - `docs/whatsapp/templates-meta.md` — adicionar o template de retomada e
@@ -532,9 +513,8 @@ Lista prevista, sujeita às assinaturas finais de WA-05/WA-06:
 
 1. WA-05 incorporada.
 2. Núcleo da WA-08 e fluxos estáveis implementados.
-3. WA-06 ainda pendente.
-4. Depois da WA-06, revisar as assinaturas finais, a estratégia dos botões e a
-   confirmação enviada ao inquilino.
+3. WA-06 incorporada e conflitos resolvidos.
+4. Templates com quick replies e confirmação ao inquilino integrados.
 
 ### Etapa 1 — política e modelo
 
@@ -566,7 +546,7 @@ Lista prevista, sujeita às assinaturas finais de WA-05/WA-06:
 1. Documentar `retomada_atendimento` no catálogo.
 2. Documentar `pagamento_confirmado` e
    `comprovante_sem_correspondencia`.
-3. Revisar a compatibilidade dos botões da WA-06 com templates aprovados.
+3. Documentar e testar a compatibilidade dos botões da WA-06 com templates.
 4. Marcar claramente que cadastro e aprovação na Meta são externos ao código.
 5. Registrar a migration 020 no setup do Supabase.
 
@@ -625,7 +605,7 @@ um teste unitário adicional coletável.
 - Não mudar os textos validados do A2.
 - Não marcar charge como notificada para compensar falha de transporte sem
   uma decisão explícita de idempotência/entrega.
-- Não deixar a futura WA-06 introduzir um caminho que contorne a política.
+- Não permitir que alterações futuras nos botões contornem a política.
 - Não usar uma falha de consulta como justificativa para texto livre.
 - Não aceitar parâmetros em ordem diferente da cadastrada na Meta.
 
@@ -639,8 +619,9 @@ um teste unitário adicional coletável.
 | Núcleo implementado após WA-05 | 95% |
 | Integração final após revisão/merge da WA-06 | 95% |
 
-O núcleo, cron A2 e A5 estão cobertos. A confiança sobre comprovantes depende
-da forma final que a WA-06 der aos botões e callbacks.
+O núcleo, cron A2, A5 e os caminhos finais de comprovante da WA-06 estão
+cobertos. A única evolução separada é a substituição aprovada posteriormente
+do fluxo `Só uma delas`, descrita em `plano-fluxo-botoes-comprovante.md`.
 
 ## 12. Decisões finais
 
@@ -664,9 +645,9 @@ concluídos pelo código.
 
 ### 12.3. Ordem da implementação
 
-WA-05 foi incorporada e a parte independente da WA-08 foi implementada. Após
-a WA-06, revisar os arquivos compartilhados e confirmar que nenhum caminho de
-texto ou botões contorna a política central.
+WA-05 e WA-06 foram incorporadas. Os arquivos compartilhados foram revisados;
+os envios iniciais de botões à gestão usam templates e a confirmação ao
+inquilino passa pela política central.
 
 ### 12.4. O que fazer com uma resposta que não pôde ser entregue
 

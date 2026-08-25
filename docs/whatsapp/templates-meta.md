@@ -47,7 +47,7 @@ Olá, {{1}}! Passando para lembrar que {{2}} vence dia {{3}}. Qualquer dúvida, 
 **Exemplo:** `João`, `o aluguel do Apto 302, Ed. X`, `15/09/2026`
 
 **Consumidor:** `app/agents/a2_cobranca/mensagens.py` (estágios `d-5`/`d0`,
-tipo aluguel e conta) — transporte a conectar na WA-08/WA-05. O texto livre
+tipo aluguel e conta) — transporte integrado pela WA-08/WA-05. O texto livre
 atual de `_montar_mensagem_aluguel`/`_montar_mensagem_conta` pra esses dois
 estágios é mais informal ("Bom dia" vs "Olá") — este corpo generaliza os
 dois casos num único template revisável pela Meta; ajustar o tom exato é
@@ -79,7 +79,7 @@ Olá, {{1}}. Não localizamos o pagamento de {{2}} (vencimento {{3}}). O débito
 
 **Consumidor:** `app/agents/a2_cobranca/mensagens.py` (estágios `d+5`/`d+10`)
 — valores vêm de `_calcular_encargos` (mesmo arquivo), já usados no texto
-livre validado com o cliente. Transporte a conectar na WA-08/WA-05.
+livre validado com o cliente. Transporte integrado pela WA-08/WA-05.
 
 ---
 
@@ -123,6 +123,7 @@ Imóvel: {{2}}
 Valor identificado: {{3}}
 Data identificada: {{4}}
 Valor esperado (contrato): R$ {{5}}
+Critério da correspondência: {{6}}
 ```
 
 **Botões (quick reply):** "Confirmar" / "Valor diverge" — payload
@@ -136,18 +137,15 @@ o clique ser reconhecido por `decodificar_button_id` no webhook.
 3. Valor identificado no comprovante (ou "não legível")
 4. Data identificada no comprovante (ou "não legível")
 5. Valor esperado, conforme o contrato
+6. Critério determinístico: `Única cobrança em aberto` ou
+   `Correspondência identificada automaticamente pelo valor`
 
 **Exemplo:** `João`, `Apto 302, Ed. X`, `R$ 1.500,00`, `15/09/2026`,
-`1.500,00`
+`1.500,00`, `Correspondência identificada automaticamente pelo valor`
 
 **Consumidor:** `app/agents/a2_cobranca/notificacao.py::notificar_fernanda_comprovante`
-— transporte a conectar na WA-05/WA-06. **Observação em aberto:** o texto
-livre atual também aceita uma `nota_deteccao_automatica` opcional (só
-aparece quando o sistema resolveu sozinho entre múltiplas charges em
-aberto) — como um template Meta tem número FIXO de variáveis, essa nota
-não está representada aqui. Quem implementar a WA-06 precisa decidir: (a)
-omitir a nota na versão via template, ou (b) sempre incluir uma 6ª
-variável vazia quando não houver nota.
+— transporte por template com payloads quick reply dinâmicos integrado na
+união da WA-06 com a WA-08.
 
 ---
 
@@ -169,11 +167,11 @@ Charges em aberto que juntas somam esse valor (R$ {{5}}):
 {{6}}
 ```
 
-**Botões (quick reply):** "Cobre os dois" / "Só uma delas" / "Valor
-diverge" — payload dinâmico via `montar_button_id_combinado_todos` (as
-duas outras ações não têm suporte de decodificação formal ainda, ver
-`button_ids.py`; "Só uma delas" é tratado com cautela na WA-06, nunca
-altera charge automaticamente).
+**Botões (quick reply):** "Cobre os dois" / "Só uma delas" — payloads
+dinâmicos via `montar_button_id_combinado_todos` e
+`montar_button_id_escolher_parcial`. O primeiro clique em "Só uma delas"
+não altera nenhuma charge; a seleção atual em duas etapas será substituída
+somente depois da aprovação do plano específico do novo fluxo.
 
 **Variáveis:**
 1. Nome do inquilino
@@ -187,7 +185,8 @@ altera charge automaticamente).
 `1.500,00`, `- Aluguel: R$ 1.200,00\n- Água: R$ 300,00`
 
 **Consumidor:** `app/agents/a2_cobranca/notificacao.py::notificar_fernanda_pagamento_combinado`
-— transporte a conectar na WA-05/WA-06.
+— transporte por template com payloads quick reply dinâmicos integrado na
+união da WA-06 com a WA-08.
 
 ---
 
@@ -265,7 +264,7 @@ WA-05 e parâmetros separados pela WA-08.
 | Template | Destinatário | Variável de ambiente |
 |---|---|---|
 | `aviso_vencimento`, `aviso_atraso`, `aviso_atraso_severo` | Inquilino | `contrato.telefone_whatsapp` (não é uma env var — vem do registro do contrato) |
-| `comprovante_para_conferencia`, `pagamento_combinado`, `comprovante_sem_correspondencia` | Fernanda (staff) | `WHATSAPP_STAFF_PHONE_NUMBER` após integração da WA-06 |
+| `comprovante_para_conferencia`, `pagamento_combinado`, `comprovante_sem_correspondencia` | Fernanda (staff) | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `alerta_contratual` | Equipe (Domingos/Fernanda) | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `escalonamento_equipe` | Equipe | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `retomada_atendimento`, `pagamento_confirmado` | Inquilino | `contrato.telefone_whatsapp` |
@@ -304,11 +303,11 @@ Recebemos seu comprovante, {{1}}. Pagamento confirmado, obrigado!
 
 **Exemplo:** `João Pereira`
 
-**Consumidor futuro:**
+**Consumidor:**
 `app/agents/a2_cobranca/notificacao.py::responder_confirmacao_pagamento` —
 usar quando a confirmação da Fernanda ocorrer com a janela do inquilino
-fechada ou indeterminada. Integração pendente da WA-06, que definirá o fluxo
-final do clique e disponibilizará o contrato à política.
+fechada ou indeterminada. Integração concluída após a WA-06 disponibilizar o
+contrato à política.
 
 ---
 
@@ -338,10 +337,9 @@ O valor não bate com nenhuma delas nem com a soma — resolver manualmente.
 4. Data identificada ou `não legível`.
 5. Lista determinística das charges em aberto.
 
-**Consumidor futuro:**
+**Consumidor:**
 `app/agents/a2_cobranca/notificacao.py::notificar_fernanda_sem_match` —
-integração pendente da WA-06 para manter todas as mensagens gerenciais em
-templates e usar o destino de staff definitivo.
+envio gerencial por template e destino de staff configurado.
 
 **Status operacional dos templates 8–10:** especificados no repositório, mas
 o código não presume cadastro, submissão ou aprovação na Meta. Essas etapas

@@ -5,12 +5,12 @@ Cobre quatro frentes:
 1. Round-trip dos IDs: todo `id` montado por `montar_button_id_*`
    (app/agents/a2_cobranca/button_ids.py) precisa ser reconhecido de volta
    por `decodificar_button_id`, com a mesma acao/contract_id/charge_ids.
-2. Payloads de notificação: `notificar_fernanda_comprovante`,
+2. Payloads dos templates: `notificar_fernanda_comprovante`,
    `notificar_fernanda_pagamento_combinado` e
    `notificar_pergunta_qual_charge_paga` (app/agents/a2_cobranca/
-   notificacao.py) precisam chamar `whatsapp_client.enviar_botoes` com
-   títulos/ids dentro dos limites da Meta e ids que decodificam de volta
-   pra ação/contract_id/charge_id(s) corretos.
+   notificacao.py) preservam IDs que decodificam de volta para
+   ação/contract_id/charge_id(s). A segunda pergunta provisória ainda usa
+   `enviar_botoes` até o novo fluxo ser aprovado.
 3. Roteamento do clique: cada ação decodificável (confirmar, divergente,
    combinado_todos, escolher_parcial, combinado_parcial) precisa disparar
    o processamento certo em app/orchestrator/orchestrator.py; um id
@@ -114,11 +114,11 @@ class TestPayloadNotificarFernandaComprovante:
     def test_botoes_confirmar_e_divergente_decodificaveis(self, monkeypatch):
         chamadas = []
 
-        def fake_enviar_botoes(telefone, corpo, botoes):
-            chamadas.append((telefone, corpo, botoes))
+        def fake_enviar_template(telefone, nome, parametros, lang="pt_BR", *, botoes=None):
+            chamadas.append((telefone, nome, parametros, botoes))
             return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.1")
 
-        monkeypatch.setattr(wc, "enviar_botoes", fake_enviar_botoes)
+        monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
 
         notif_a2.notificar_fernanda_comprovante(
             "+5581988880000",
@@ -132,23 +132,20 @@ class TestPayloadNotificarFernandaComprovante:
         )
 
         assert len(chamadas) == 1
-        _, _, botoes = chamadas[0]
+        _, nome, parametros, botoes = chamadas[0]
+        assert nome == "comprovante_para_conferencia"
+        assert parametros[-1] == "Única cobrança em aberto"
         assert len(botoes) == 2
 
-        for botao in botoes:
-            assert 1 <= len(botao["titulo"]) <= 20
-            assert 1 <= len(botao["id"]) <= 256
-
         confirmar, divergente = botoes
-        assert confirmar["titulo"] == "Confirmar"
-        assert divergente["titulo"] == "Valor diverge"
+        assert all(1 <= len(payload) <= 256 for payload in botoes)
 
-        decod_confirmar = button_ids.decodificar_button_id(confirmar["id"])
+        decod_confirmar = button_ids.decodificar_button_id(confirmar)
         assert decod_confirmar.acao == button_ids.ACAO_CONFIRMAR
         assert decod_confirmar.contract_id == CONTRACT_ID
         assert decod_confirmar.charge_ids == ["charge-1"]
 
-        decod_divergente = button_ids.decodificar_button_id(divergente["id"])
+        decod_divergente = button_ids.decodificar_button_id(divergente)
         assert decod_divergente.acao == button_ids.ACAO_DIVERGENTE
         assert decod_divergente.contract_id == CONTRACT_ID
         assert decod_divergente.charge_ids == ["charge-1"]
@@ -163,11 +160,11 @@ class TestPayloadNotificarFernandaPagamentoCombinado:
     def test_botoes_cobre_os_dois_e_so_uma_delas_decodificaveis(self, monkeypatch):
         chamadas = []
 
-        def fake_enviar_botoes(telefone, corpo, botoes):
-            chamadas.append((telefone, corpo, botoes))
+        def fake_enviar_template(telefone, nome, parametros, lang="pt_BR", *, botoes=None):
+            chamadas.append((telefone, nome, parametros, botoes))
             return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.2")
 
-        monkeypatch.setattr(wc, "enviar_botoes", fake_enviar_botoes)
+        monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
 
         notif_a2.notificar_fernanda_pagamento_combinado(
             "+5581988880000",
@@ -180,33 +177,30 @@ class TestPayloadNotificarFernandaPagamentoCombinado:
         )
 
         assert len(chamadas) == 1
-        _, corpo, botoes = chamadas[0]
+        _, nome, parametros, botoes = chamadas[0]
+        assert nome == "pagamento_combinado"
+        assert parametros[-1] == "- Aluguel: R$ 2.200,00\n- Agua: R$ 100,00"
 
-        # Nunca mais de 3 botões (limite da Meta) — aqui, propositalmente, só 2.
         assert len(botoes) <= 3
-        assert [b["titulo"] for b in botoes] == ["Cobre os dois", "Só uma delas"]
-
-        for botao in botoes:
-            assert 1 <= len(botao["titulo"]) <= 20
-            assert 1 <= len(botao["id"]) <= 256
+        assert all(1 <= len(payload) <= 256 for payload in botoes)
 
         cobre_os_dois, so_uma_delas = botoes
 
-        decod_todos = button_ids.decodificar_button_id(cobre_os_dois["id"])
+        decod_todos = button_ids.decodificar_button_id(cobre_os_dois)
         assert decod_todos.acao == button_ids.ACAO_COMBINADO_TODOS
         assert decod_todos.contract_id == CONTRACT_ID
         assert decod_todos.charge_ids == ["charge-aluguel", "charge-agua"]
 
-        decod_escolher = button_ids.decodificar_button_id(so_uma_delas["id"])
+        decod_escolher = button_ids.decodificar_button_id(so_uma_delas)
         assert decod_escolher.acao == button_ids.ACAO_ESCOLHER_PARCIAL
         assert decod_escolher.contract_id == CONTRACT_ID
         assert decod_escolher.charge_ids == ["charge-aluguel", "charge-agua"]
 
-        # Sem "Valor diverge" nesta mensagem (ver notificacao.py) — o caso
-        # de valor que realmente não bate com nada continua manual.
-        titulos = [b["titulo"] for b in botoes]
-        assert "Valor diverge" not in titulos
-        assert "resolver manualmente" in corpo
+        assert all(
+            button_ids.decodificar_button_id(payload).acao
+            != button_ids.ACAO_DIVERGENTE
+            for payload in botoes
+        )
 
 
 class TestPayloadNotificarPerguntaQualChargePaga:

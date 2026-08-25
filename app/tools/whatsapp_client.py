@@ -435,36 +435,92 @@ def enviar_texto(telefone: str, texto: str) -> ResultadoEnvio:
     return _enviar_mensagem(payload, telefone, operacao="enviar_texto")
 
 
+def _validar_botoes_template(botoes: list[str]) -> None:
+    """Valida payloads dos quick replies de um template.
+
+    Os títulos já pertencem ao template aprovado; no envio informamos apenas
+    os payloads dinâmicos, na mesma ordem dos botões cadastrados.
+    """
+    if len(botoes) > _MAX_BOTOES:
+        raise WhatsAppConteudoInvalidoError(
+            f"enviar_template aceita até {_MAX_BOTOES} botões, recebido {len(botoes)}."
+        )
+    for indice, payload in enumerate(botoes):
+        if not payload:
+            raise WhatsAppConteudoInvalidoError(
+                f"Botão de template {indice}: payload vazio."
+            )
+        if len(payload) > _MAX_ID_BOTAO_CARACTERES:
+            raise WhatsAppConteudoInvalidoError(
+                f"Botão de template {indice}: payload com {len(payload)} caracteres, "
+                f"máximo {_MAX_ID_BOTAO_CARACTERES}."
+            )
+
+
 def enviar_template(
-    telefone: str, nome: str, parametros: list[str], lang: str = "pt_BR"
+    telefone: str,
+    nome: str,
+    parametros: list[str],
+    lang: str = "pt_BR",
+    *,
+    botoes: Optional[list[str]] = None,
 ) -> ResultadoEnvio:
     """Envia uma mensagem de template pré-aprovado pela Meta — obrigatório
     fora da janela de 24h ou para mensagens proativas (cron de cobrança,
     alertas do A4). `parametros` é posicional, na MESMA ordem cadastrada no
     template junto à Meta (catálogo formal: WA-09) — viram o componente
-    `body` da mensagem, um por variável `{{n}}` do template.
+    `body` da mensagem, um por variável `{{n}}` do template. `botoes`
+    contém somente os payloads dinâmicos dos quick replies, na ordem dos
+    botões cadastrados no template; os títulos não são enviados aqui.
     """
+    payloads_botoes = botoes or []
+    _validar_botoes_template(payloads_botoes)
+
     if not envio_ativo():
-        _log_operacao("enviar_template", telefone, simulado=True, template=nome)
+        _log_operacao(
+            "enviar_template",
+            telefone,
+            simulado=True,
+            template=nome,
+            n_botoes=len(payloads_botoes),
+        )
         return ResultadoEnvio(sucesso=True, simulado=True)
 
     validar_configuracao_envio_real()
     destino = _normalizar_destino(telefone)
     template: dict = {"name": nome, "language": {"code": lang}}
+    componentes: list[dict] = []
     if parametros:
-        template["components"] = [
+        componentes.append(
             {
                 "type": "body",
                 "parameters": [{"type": "text", "text": parametro} for parametro in parametros],
             }
-        ]
+        )
+    componentes.extend(
+        {
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": str(indice),
+            "parameters": [{"type": "payload", "payload": payload}],
+        }
+        for indice, payload in enumerate(payloads_botoes)
+    )
+    if componentes:
+        template["components"] = componentes
     payload = {
         "messaging_product": "whatsapp",
         "to": destino,
         "type": "template",
         "template": template,
     }
-    return _enviar_mensagem(payload, telefone, operacao="enviar_template", template=nome)
+    return _enviar_mensagem(
+        payload,
+        telefone,
+        operacao="enviar_template",
+        template=nome,
+        n_botoes=len(payloads_botoes),
+    )
 
 
 def _validar_botoes(botoes: list[dict]) -> None:

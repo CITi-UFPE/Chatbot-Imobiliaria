@@ -141,6 +141,28 @@ def test_busca_normaliza_timestamp_com_offset_para_utc():
     assert ultima.tzinfo == timezone.utc
 
 
+def test_enviar_saida_template_preserva_ordem_dos_quick_replies():
+    template = policy.MensagemTemplate(
+        nome="comprovante_para_conferencia",
+        parametros=("João",),
+        botoes=(
+            policy.BotaoTemplateQuickReply(payload="confirmar|contrato|charge"),
+            policy.BotaoTemplateQuickReply(payload="divergente|contrato|charge"),
+        ),
+    )
+
+    with patch("app.tools.whatsapp_message_policy.whatsapp_client.enviar_template") as enviar:
+        policy.enviar_saida("+5581999990000", template)
+
+    enviar.assert_called_once_with(
+        "+5581999990000",
+        "comprovante_para_conferencia",
+        ["João"],
+        lang="pt_BR",
+        botoes=["confirmar|contrato|charge", "divergente|contrato|charge"],
+    )
+
+
 @pytest.fixture
 def dados_cobranca() -> DadosCobrancaContrato:
     return DadosCobrancaContrato(

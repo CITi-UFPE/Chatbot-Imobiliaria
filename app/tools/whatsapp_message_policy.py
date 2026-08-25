@@ -31,8 +31,21 @@ class MensagemTexto(BaseModel):
     texto: str = Field(min_length=1)
 
 
+class BotaoTemplateQuickReply(BaseModel):
+    """Payload dinâmico de um botão quick reply já cadastrado no template.
+
+    O título é definido no WhatsApp Manager. A posição nesta tupla determina
+    o índice do botão e precisa seguir a mesma ordem cadastrada na Meta.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tipo: Literal["quick_reply"] = "quick_reply"
+    payload: str = Field(min_length=1, max_length=256)
+
+
 class MensagemTemplate(BaseModel):
-    """Template Meta com parâmetros posicionais na ordem cadastrada."""
+    """Template Meta com corpo e quick replies na ordem cadastrada."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -40,6 +53,7 @@ class MensagemTemplate(BaseModel):
     nome: str = Field(min_length=1)
     idioma: str = Field(default="pt_BR", min_length=1)
     parametros: tuple[str, ...] = ()
+    botoes: tuple[BotaoTemplateQuickReply, ...] = Field(default=(), max_length=3)
 
 
 SaidaWhatsApp: TypeAlias = MensagemTexto | MensagemTemplate
@@ -167,9 +181,13 @@ def enviar_saida(telefone: str, saida: SaidaWhatsApp):
     """Transporta a saída já decidida pelo cliente central da Meta."""
     if isinstance(saida, MensagemTexto):
         return whatsapp_client.enviar_texto(telefone, saida.texto)
+    argumentos_botoes = {}
+    if saida.botoes:
+        argumentos_botoes["botoes"] = [botao.payload for botao in saida.botoes]
     return whatsapp_client.enviar_template(
         telefone,
         saida.nome,
         list(saida.parametros),
         lang=saida.idioma,
+        **argumentos_botoes,
     )

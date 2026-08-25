@@ -165,7 +165,9 @@ def _resolver_charge_e_notificar(
     outro canal. Os ramos SEM gravação prévia (charges_abertas vazio, valor
     ausente, B.c) não precisam desse cuidado — não há nada "já feito" que
     a falha possa mascarar."""
-    telefone_fernanda = ""  # TODO: número/ID da Fernanda — não decidido nesta task
+    # O notificador resolve WHATSAPP_STAFF_PHONE_NUMBER quando o envio real
+    # está ativo. O valor vazio preserva o modo simulado sem exigir env var.
+    telefone_fernanda = ""
     nome = dados_contrato.get("inquilino_nome", "")
     imovel = dados_contrato.get("imovel_identificacao", "")
 
@@ -320,6 +322,7 @@ def confirmar_pagamento(contract_id: str, charge_id: str) -> None:
 
     dados_contrato = client_agente.rpc("buscar_dados_cobranca_contrato", {}).execute().data or {}
     responder_confirmacao_pagamento(
+        client_agente=client_agente,
         telefone_whatsapp=dados_contrato.get("telefone_whatsapp", ""),
         nome_inquilino=dados_contrato.get("inquilino_nome", ""),
     )
@@ -367,6 +370,7 @@ def confirmar_pagamento_combinado(contract_id: str, charge_ids: list[str]) -> No
 
     dados_contrato = client_agente.rpc("buscar_dados_cobranca_contrato", {}).execute().data or {}
     responder_confirmacao_pagamento(
+        client_agente=client_agente,
         telefone_whatsapp=dados_contrato.get("telefone_whatsapp", ""),
         nome_inquilino=dados_contrato.get("inquilino_nome", ""),
     )
@@ -431,6 +435,7 @@ def marcar_apenas_uma_paga(
 
     dados_contrato = client_agente.rpc("buscar_dados_cobranca_contrato", {}).execute().data or {}
     responder_confirmacao_pagamento(
+        client_agente=client_agente,
         telefone_whatsapp=dados_contrato.get("telefone_whatsapp", ""),
         nome_inquilino=dados_contrato.get("inquilino_nome", ""),
     )
