@@ -9,12 +9,10 @@ whatsapp_client.enviar_texto/enviar_template/enviar_botoes já caem em modo
 simulado sozinhos (logam e devolvem sem chamada HTTP), então nada aqui
 precisa checar o kill switch explicitamente.
 
-Reativo vs proativo (decisão da WA-05; a janela de 24h completa da Meta
-fica pra WA-08): `enviar_mensagem_cobranca` é disparada pelo cron diário
-(app/agents/a2_cobranca/cobranca.py), sem nenhuma mensagem recente do
-inquilino no meio — vai como TEMPLATE. As demais funções abaixo são
-sempre disparadas de dentro do processamento de um webhook (comprovante
-recebido, clique de confirmação) — vão como TEXTO LIVRE / interactive.
+WA-08: `enviar_mensagem_cobranca` recebe agora um template estruturado por
+estágio. Os fluxos de comprovante abaixo mantêm as assinaturas, botões e IDs
+definidos pela WA-06 e serão integrados ao transporte de templates depois da
+resolução do cherry-pick.
 
 WA-06: `notificar_fernanda_comprovante` e
 `notificar_fernanda_pagamento_combinado` agora mandam botões nativos de
@@ -58,6 +56,7 @@ from app.agents.a2_cobranca.button_ids import (
     montar_button_id_escolher_parcial,
 )
 from app.tools import whatsapp_client
+from app.tools.whatsapp_message_policy import MensagemTemplate, enviar_saida
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +74,6 @@ _MAX_CHARGES_BOTAO_QUAL_PAGA = 3
 # expor esses campos separadamente em vez do texto já pronto que
 # enviar_mensagem_cobranca recebe hoje; fica pra quando mensagens.py for
 # reestruturado (WA-08).
-_TEMPLATE_COBRANCA_MENSAGEM = "cobranca_mensagem"
-
-
 def _logar_falha_envio(operacao: str, telefone: str, erro: Exception) -> None:
     """Log explícito de falha, com destino mascarado — chamado ANTES de
     repropagar a exceção em toda função deste módulo, pra nunca depender só
@@ -102,16 +98,17 @@ def _enviar_com_log(operacao: str, telefone: str, enviar) -> None:
         _logar_falha_envio(operacao, telefone, erro)
         raise
 
-
-def enviar_mensagem_cobranca(telefone_whatsapp: str, texto: str) -> None:
+def enviar_mensagem_cobranca(
+    telefone_whatsapp: str,
+    mensagem: MensagemTemplate,
+) -> None:
     """Envia a mensagem de cobrança D-5/D0/D+5/D+10/D+15 — disparada pelo
-    cron diário, portanto proativa (não há mensagem recente do inquilino
-    nesta janela): transporta como template."""
-    _enviar_com_log(
-        "enviar_mensagem_cobranca",
-        telefone_whatsapp,
-        lambda: whatsapp_client.enviar_template(telefone_whatsapp, _TEMPLATE_COBRANCA_MENSAGEM, [texto]),
-    )
+    cron diário, portanto sempre proativa e já estruturada como template."""
+    try:
+        enviar_saida(telefone_whatsapp, mensagem)
+    except Exception as erro:
+        _logar_falha_envio("enviar_mensagem_cobranca", telefone_whatsapp, erro)
+        raise
 
 
 def notificar_fernanda_comprovante(
