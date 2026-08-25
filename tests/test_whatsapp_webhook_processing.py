@@ -13,6 +13,7 @@ app.orchestrator.processar_mensagem
 (importada por nome direto ali, então sobrescrever o atributo do módulo é
 suficiente para afetar as chamadas internas)."""
 
+import base64
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -235,6 +236,121 @@ def test_midia_real_envia_resposta_para_mesmo_from(monkeypatch, fake_client):
 
     assert resposta == "Comprovante recebido, obrigado."
     assert enviados == [(telefone, resposta)]
+
+
+def _payload_midia_real(
+    telefone: str = "+5581999998888", media_id: str = "wamid-media-1", mime: str = "image/jpeg"
+) -> dict:
+    """Payload real da Meta — sem _dados_base64 (isso só existe no payload
+    simulado do dev_chat), só o media_id que exige baixar_midia de verdade
+    (ver app/tools/whatsapp_client.py, WA-03)."""
+    mensagem = {
+        "id": "wamid.midia2",
+        "from": telefone,
+        "type": "image",
+        "image": {"mime_type": mime, "id": media_id},
+    }
+    return {"entry": [{"changes": [{"value": {"messages": [mensagem]}}]}]}
+
+
+class _ResultadoMidiaFake:
+    def __init__(self, conteudo: bytes, mime_type: str):
+        self.conteudo = conteudo
+        self.mime_type = mime_type
+
+
+def test_midia_real_sem_dados_base64_baixa_via_whatsapp_client_e_usa_mime_do_client(
+    monkeypatch, fake_client
+):
+    """Checkup do Daniel, Ponto 1: payload real (sem _dados_base64) precisa
+    chamar whatsapp_client.baixar_midia de verdade, converter os bytes pra
+    base64 corretamente, e usar o mime_type DEVOLVIDO PELO CLIENTE (que pode
+    divergir do mime_type do payload inicial do webhook) — não o do payload
+    inicial."""
+    telefone = "+5581999998888"
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
+
+    chamadas_baixar = []
+
+    def _fake_baixar_midia(media_id):
+        chamadas_baixar.append(media_id)
+        return _ResultadoMidiaFake(b"conteudo-real-do-comprovante", "application/pdf")
+
+    monkeypatch.setattr(pm, "baixar_midia", _fake_baixar_midia)
+
+    chamadas_rotear = []
+
+    def _fake_rotear(cid, b64, mime):
+        chamadas_rotear.append((cid, b64, mime))
+        return ("Comprovante recebido, obrigado.", "a2")
+
+    monkeypatch.setattr(pm, "rotear_comprovante_a2", _fake_rotear)
+    enviados = _capturar_envios(monkeypatch)
+
+    resposta = pm.processar_mensagem_recebida(
+        _payload_midia_real(telefone=telefone, media_id="wamid-media-1", mime="image/jpeg"),
+        responder_via_whatsapp=True,
+    )
+
+    assert resposta == "Comprovante recebido, obrigado."
+    assert chamadas_baixar == ["wamid-media-1"]
+    assert chamadas_rotear == [
+        (
+            "contract-1",
+            base64.b64encode(b"conteudo-real-do-comprovante").decode("ascii"),
+            "application/pdf",  # mime do CLIENTE, não "image/jpeg" do payload inicial
+        )
+    ]
+    assert enviados == [(telefone, resposta)]
+
+
+def test_midia_real_falha_no_download_produz_fallback_controlado(monkeypatch, fake_client):
+    """Erro de download (rede, host recusado, MIME inválido, etc.) nunca
+    deve propagar pro webhook nem chegar a chamar o A2 — cai no fallback já
+    existente, pedindo análise manual."""
+    telefone = "+5581999998888"
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
+
+    def _fake_baixar_midia_com_falha(media_id):
+        raise RuntimeError("Meta fora do ar")
+
+    monkeypatch.setattr(pm, "baixar_midia", _fake_baixar_midia_com_falha)
+
+    chamadas_rotear = []
+    monkeypatch.setattr(
+        pm, "rotear_comprovante_a2", lambda cid, b64, mime: chamadas_rotear.append((cid, b64, mime))
+    )
+    enviados = _capturar_envios(monkeypatch)
+
+    resposta = pm.processar_mensagem_recebida(
+        _payload_midia_real(telefone=telefone), responder_via_whatsapp=True
+    )
+
+    assert "não conseguimos baixá-lo" in resposta
+    assert chamadas_rotear == []  # nunca chegou a chamar o A2
+    # client_agente ainda não foi obtido nesse ramo de falha precoce (mesmo
+    # padrão de test_contrato_nao_encontrado_envia_mensagem_segura) — a
+    # política de saída, sem cliente pra checar a janela de 24h, cai no
+    # template seguro em vez do texto livre.
+    assert enviados == [(telefone, "retomada_atendimento")]
+
+
+def test_midia_simulada_com_dados_base64_nao_chama_baixar_midia(monkeypatch, fake_client):
+    """Regressão: o caminho simulado (_dados_base64, usado pelo dev_chat)
+    continua funcionando sem passar pelo download real."""
+    telefone = "+5581999998888"
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
+
+    chamadas_baixar = []
+    monkeypatch.setattr(pm, "baixar_midia", lambda media_id: chamadas_baixar.append(media_id))
+    monkeypatch.setattr(
+        pm, "rotear_comprovante_a2", lambda cid, b64, mime: ("Comprovante recebido, obrigado.", "a2")
+    )
+    _capturar_envios(monkeypatch)
+
+    pm.processar_mensagem_recebida(_payload_midia(telefone=telefone), responder_via_whatsapp=True)
+
+    assert chamadas_baixar == []
 
 
 # ======================================================================

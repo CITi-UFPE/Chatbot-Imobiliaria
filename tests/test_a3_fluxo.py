@@ -135,6 +135,14 @@ def test_descricao_com_confianca_alta_abre_ticket_direto():
     assert "24h" in resultado.resposta_inquilino
     assert resultado.notificacao_gestora is not None
     assert IMOVEL_ENDERECO in resultado.notificacao_gestora
+    # checkup pós-WA-06/WA-08 (Ponto 3): parâmetros estruturados pro
+    # template manutencao_equipe, na ordem protocolo/imóvel/categoria/
+    # urgência/descrição — é isso que app/agents/a3_manutencao/atendimento.py
+    # de fato usa pra notificar a equipe agora.
+    assert resultado.notificacao_gestora_parametros is not None
+    assert resultado.notificacao_gestora_parametros[0] == resultado.ticket.protocolo
+    assert IMOVEL_ENDERECO in resultado.notificacao_gestora_parametros[1]
+    assert len(resultado.notificacao_gestora_parametros) == 5
 
 
 def test_urgencia_alta_menciona_prazo_de_1h_e_emergencia():

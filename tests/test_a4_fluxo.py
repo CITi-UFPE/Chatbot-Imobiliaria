@@ -95,37 +95,112 @@ class TestProcessarAlertaRenovacao:
 
 
 class TestProcessarFinalizacaoContrato:
+    """processar_finalizacao_contrato é um dispatcher por tipo_renovacao
+    (Migration 016) desde antes destes testes existirem — a assinatura com
+    só finalizar_contrato_fn é do desenho ORIGINAL (Migration 012), anterior
+    ao dispatcher de 3 vias. Checkup pós-WA-06/WA-08 (Ponto 4): estes testes
+    ficaram desatualizados numa mudança de fluxo de renovação anterior a
+    esta sprint — o caminho real (executar_alertas_contratuais) sempre
+    forneceu os três callbacks; só os testes não acompanharam. Reescritos
+    aqui com fakes para os três, um cenário por tipo_renovacao, e conferindo
+    que só o callback correspondente é chamado em cada caso."""
+
+    def _fakes(self, *, finalizar=True, desativar=True, transicionar=True):
+        return {
+            "finalizar_contrato_fn": RegistroChamadas(retorno=finalizar),
+            "desativar_pendente_renovacao_fn": RegistroChamadas(retorno=desativar),
+            "transicionar_indeterminado_fn": RegistroChamadas(retorno=transicionar),
+        }
+
     def test_fora_da_data_termino_nao_finaliza(self):
         contrato = _contrato(data_termino=date(2026, 9, 13))
-        finalizar = RegistroChamadas()
+        fakes = self._fakes()
 
-        resultado = processar_finalizacao_contrato(
-            contrato, date(2026, 7, 15), finalizar_contrato_fn=finalizar
-        )
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
 
         assert resultado is None
-        assert not finalizar.chamadas
+        assert not fakes["finalizar_contrato_fn"].chamadas
+        assert not fakes["desativar_pendente_renovacao_fn"].chamadas
+        assert not fakes["transicionar_indeterminado_fn"].chamadas
 
-    def test_na_data_termino_finaliza(self):
-        contrato = _contrato(data_termino=date(2026, 7, 15))
-        finalizar = RegistroChamadas(retorno=True)
+    def test_novo_contrato_na_data_termino_finaliza(self):
+        """tipo_renovacao='novo_contrato' (o padrão do model) — comportamento
+        original: finaliza direto, sem pendência de renovação."""
+        contrato = _contrato(data_termino=date(2026, 7, 15), tipo_renovacao="novo_contrato")
+        fakes = self._fakes()
 
-        resultado = processar_finalizacao_contrato(
-            contrato, date(2026, 7, 15), finalizar_contrato_fn=finalizar
-        )
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
 
-        assert resultado == CONTRACT_ID
-        assert finalizar.chamadas == [(CONTRACT_ID,)]
+        assert resultado == ("finalizado", CONTRACT_ID)
+        assert fakes["finalizar_contrato_fn"].chamadas == [(CONTRACT_ID,)]
+        assert not fakes["desativar_pendente_renovacao_fn"].chamadas
+        assert not fakes["transicionar_indeterminado_fn"].chamadas
 
     def test_finalizar_contrato_fn_retorna_false_sem_excecao(self):
         """Já não estava mais 'ativo' (outra chamada já finalizou) — não é
         erro, só devolve None sem propagar."""
-        contrato = _contrato(data_termino=date(2026, 7, 15))
-        finalizar = RegistroChamadas(retorno=False)
+        contrato = _contrato(data_termino=date(2026, 7, 15), tipo_renovacao="novo_contrato")
+        fakes = self._fakes(finalizar=False)
 
-        resultado = processar_finalizacao_contrato(
-            contrato, date(2026, 7, 15), finalizar_contrato_fn=finalizar
-        )
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
+
+        assert resultado is None
+
+    def test_tipo_renovacao_requer_aditivo_gera_pendencia_de_renovacao(self):
+        contrato = _contrato(data_termino=date(2026, 7, 15), tipo_renovacao="requer_aditivo")
+        fakes = self._fakes()
+
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
+
+        assert resultado == ("pendente_renovacao", CONTRACT_ID)
+        assert fakes["desativar_pendente_renovacao_fn"].chamadas == [(CONTRACT_ID,)]
+        assert not fakes["finalizar_contrato_fn"].chamadas
+        assert not fakes["transicionar_indeterminado_fn"].chamadas
+
+    def test_tipo_renovacao_automatica_gera_pendencia_de_renovacao(self):
+        contrato = _contrato(data_termino=date(2026, 7, 15), tipo_renovacao="automatica")
+        fakes = self._fakes()
+
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
+
+        assert resultado == ("pendente_renovacao", CONTRACT_ID)
+        assert fakes["desativar_pendente_renovacao_fn"].chamadas == [(CONTRACT_ID,)]
+        assert not fakes["finalizar_contrato_fn"].chamadas
+        assert not fakes["transicionar_indeterminado_fn"].chamadas
+
+    def test_tipo_renovacao_nao_identificado_gera_pendencia_de_renovacao(self):
+        contrato = _contrato(data_termino=date(2026, 7, 15), tipo_renovacao="nao_identificado")
+        fakes = self._fakes()
+
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
+
+        assert resultado == ("pendente_renovacao", CONTRACT_ID)
+        assert fakes["desativar_pendente_renovacao_fn"].chamadas == [(CONTRACT_ID,)]
+
+    def test_desativar_pendente_renovacao_fn_retorna_false_sem_excecao(self):
+        contrato = _contrato(data_termino=date(2026, 7, 15), tipo_renovacao="requer_aditivo")
+        fakes = self._fakes(desativar=False)
+
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
+
+        assert resultado is None
+
+    def test_tipo_renovacao_indeterminado_por_lei_transiciona(self):
+        contrato = _contrato(data_termino=date(2026, 7, 15), tipo_renovacao="indeterminado_por_lei")
+        fakes = self._fakes()
+
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
+
+        assert resultado == ("transicionado_indeterminado", CONTRACT_ID)
+        assert fakes["transicionar_indeterminado_fn"].chamadas == [(CONTRACT_ID,)]
+        assert not fakes["finalizar_contrato_fn"].chamadas
+        assert not fakes["desativar_pendente_renovacao_fn"].chamadas
+
+    def test_transicionar_indeterminado_fn_retorna_false_sem_excecao(self):
+        contrato = _contrato(data_termino=date(2026, 7, 15), tipo_renovacao="indeterminado_por_lei")
+        fakes = self._fakes(transicionar=False)
+
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
 
         assert resultado is None
 
@@ -134,16 +209,24 @@ class TestProcessarFinalizacaoContrato:
         012) não checava prazo_indeterminado (Migration 013) — um contrato
         de prazo indeterminado cujo data_termino "decorativo" coincidisse
         com hoje seria desativado por engano. data_termino aqui NUNCA é uma
-        data real de encerramento para esses contratos."""
-        contrato = _contrato(data_termino=date(2026, 7, 15), prazo_indeterminado=True)
-        finalizar = RegistroChamadas(retorno=True)
-
-        resultado = processar_finalizacao_contrato(
-            contrato, date(2026, 7, 15), finalizar_contrato_fn=finalizar
+        data real de encerramento para esses contratos. Guard testado com
+        tipo_renovacao='indeterminado_por_lei' (o caso mais fácil de
+        confundir com um contrato JÁ de prazo indeterminado) pra garantir
+        que prazo_indeterminado=True vence mesmo quando o tipo sozinho
+        levaria à transição."""
+        contrato = _contrato(
+            data_termino=date(2026, 7, 15),
+            prazo_indeterminado=True,
+            tipo_renovacao="indeterminado_por_lei",
         )
+        fakes = self._fakes()
+
+        resultado = processar_finalizacao_contrato(contrato, date(2026, 7, 15), **fakes)
 
         assert resultado is None
-        assert not finalizar.chamadas
+        assert not fakes["finalizar_contrato_fn"].chamadas
+        assert not fakes["desativar_pendente_renovacao_fn"].chamadas
+        assert not fakes["transicionar_indeterminado_fn"].chamadas
 
 
 class TestProcessarCalculoReajuste:

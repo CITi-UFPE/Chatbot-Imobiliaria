@@ -7,7 +7,7 @@ Sem `.env.test` preenchido, **toda a suíte é pulada** (não falha "quebrada") 
 ## 1. Provisionar o projeto Supabase de teste
 
 1. Crie um projeto Supabase **novo e separado** do de produção, mesma região (`sa-east-1` — ver `docs/setup-supabase.md`, seção 1). Nunca reutilize o projeto de produção aqui: os testes fazem `delete` de contratos fictícios e mutam estado (finalização automática, negociação) — não é algo que se queira perto de dado real.
-2. No **SQL Editor** do novo projeto, rode todas as migrations de `docs/schemas/001_create_tables.sql` até `019_normalizacao_telefone.sql`, **em ordem** (há dois arquivos históricos `018` e ambos vêm antes da `019`; várias migrations posteriores dependem de função/coluna criada nas anteriores — ver a lista comentada em `docs/setup-supabase.md`, seção 2). Alternativa via `psql`, uma vez que você tenha `SUPABASE_TEST_DB_URL` (passo 3):
+2. No **SQL Editor** do novo projeto, rode todas as migrations de `docs/schemas/001_create_tables.sql` até `020_whatsapp_janela_atendimento.sql`, **em ordem** (há dois arquivos históricos `018` e ambos vêm antes da `019`; várias migrations posteriores dependem de função/coluna criada nas anteriores — ver a lista comentada em `docs/setup-supabase.md`, seção 2). A `020` adiciona `agent_get_last_tenant_message_at()` — a RPC que a política central de texto/template da WA-08 usa pra checar a janela de 24h; sem ela aplicada, os testes de integração que dependem dessa política falham na consulta, não na lógica em si. Alternativa via `psql`, uma vez que você tenha `SUPABASE_TEST_DB_URL` (passo 3):
 
    ```bash
    for f in docs/schemas/0*.sql; do
@@ -16,6 +16,13 @@ Sem `.env.test` preenchido, **toda a suíte é pulada** (não falha "quebrada") 
    done
    ```
 3. Configure a Standby Key HS256 do projeto de teste (Settings → JWT Keys → "Create a new Standby Key" → "Import an existing secret") — mesmo processo de `docs/setup-supabase.md`, seção 5, só que gerando/importando um segredo **novo**, nunca o de produção.
+4. Verificação rápida de que a `020` foi aplicada antes de rodar a suíte da WA-08 — no **SQL Editor**:
+
+   ```sql
+   select proname from pg_proc where proname = 'agent_get_last_tenant_message_at';
+   ```
+
+   Uma linha de retorno confirma a RPC presente; nenhuma linha significa que a `020` ainda não foi aplicada nesse projeto de teste.
 
 ## 2. Configurar `.env.test`
 

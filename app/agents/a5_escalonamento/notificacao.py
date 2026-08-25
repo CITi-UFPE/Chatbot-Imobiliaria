@@ -29,10 +29,19 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_ESCALONAMENTO_EQUIPE = "escalonamento_equipe"
 
+# Checkup pós-WA-06/WA-08 (Ponto 3): o A3 reutilizava escalonamento_equipe
+# (3 variáveis) mandando só 1 parâmetro (a mensagem pronta) — a Meta
+# rejeitaria isso com envio real ativo (contagem de variáveis não bate).
+# Template próprio de manutenção, com suas 5 variáveis
+# (protocolo/imóvel/categoria/urgência/descrição) — ver
+# app/tools/mensagens_manutencao.py::montar_parametros_notificacao_gestora e
+# docs/whatsapp/templates-meta.md.
+_TEMPLATE_MANUTENCAO_EQUIPE = "manutencao_equipe"
 
-def _enviar_template_staff(parametros: list[str]) -> None:
+
+def _enviar_template_staff(nome_template: str, parametros: list[str], *, operacao: str) -> None:
     if not whatsapp_client.envio_ativo():
-        logger.info("whatsapp_client: operacao=notificar_staff simulado=True")
+        logger.info("whatsapp_client: operacao=%s simulado=True", operacao)
         return
 
     destino = whatsapp_client.telefone_staff()
@@ -40,13 +49,14 @@ def _enviar_template_staff(parametros: list[str]) -> None:
         enviar_saida(
             destino,
             MensagemTemplate(
-                nome=_TEMPLATE_ESCALONAMENTO_EQUIPE,
+                nome=nome_template,
                 parametros=tuple(parametros),
             ),
         )
     except Exception as erro:
         logger.error(
-            "whatsapp_client: falha ao enviar (operacao=notificar_staff telefone=%s): %s",
+            "whatsapp_client: falha ao enviar (operacao=%s telefone=%s): %s",
+            operacao,
             whatsapp_client.mascarar_telefone(destino),
             erro,
         )
@@ -54,16 +64,33 @@ def _enviar_template_staff(parametros: list[str]) -> None:
 
 
 def notificar_staff(mensagem: str) -> None:
-    """Compatibilidade do notificador genérico usado pelo A3.
-
-    O A3 ainda fornece apenas uma mensagem pronta de manutenção. Esse fluxo
-    será mantido como veio da WA-05 até existir uma decisão específica de
-    template para manutenção; não deve ser confundido com o template
-    estruturado do escalonamento A5 abaixo.
+    """Notificador genérico de 1 parâmetro, via template
+    `escalonamento_equipe` (3 variáveis — Meta rejeitaria com só 1
+    parâmetro se chamado direto com envio real ativo; ver
+    notificar_staff_escalonamento pro uso estruturado correto desse
+    template). Mantido por compatibilidade (assinatura pública testada em
+    tests/test_notificacoes_whatsapp.py) mas o A3 não usa mais esta função —
+    ver notificar_staff_manutencao abaixo, que usa o template próprio de
+    manutenção (checkup pós-WA-06/WA-08, Ponto 3).
     """
-    _enviar_template_staff([mensagem])
+    _enviar_template_staff(_TEMPLATE_ESCALONAMENTO_EQUIPE, [mensagem], operacao="notificar_staff")
 
 
 def notificar_staff_escalonamento(protocolo: str, motivo: str, descricao: str) -> None:
     """A5 estruturado: protocolo, motivo e descrição na ordem da Meta."""
-    _enviar_template_staff([protocolo, motivo, descricao])
+    _enviar_template_staff(
+        _TEMPLATE_ESCALONAMENTO_EQUIPE,
+        [protocolo, motivo, descricao],
+        operacao="notificar_staff_escalonamento",
+    )
+
+
+def notificar_staff_manutencao(parametros: list[str]) -> None:
+    """A3 estruturado (checkup pós-WA-06/WA-08, Ponto 3): `parametros` já
+    vem pronto de app/tools/mensagens_manutencao.py::
+    montar_parametros_notificacao_gestora, na ordem protocolo/imóvel/
+    categoria/urgência/descrição do template `manutencao_equipe` — esta
+    função só transporta, não reformata nada."""
+    _enviar_template_staff(
+        _TEMPLATE_MANUTENCAO_EQUIPE, parametros, operacao="notificar_staff_manutencao"
+    )

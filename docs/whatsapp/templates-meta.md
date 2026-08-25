@@ -263,6 +263,60 @@ WA-05 e parâmetros separados pela WA-08.
 
 ---
 
+## 12. `manutencao_equipe`
+
+**Categoria:** Utility · **Idioma:** pt_BR
+
+**Corpo sugerido:**
+```
+Novo chamado de manutenção — {{1}}
+Imóvel: {{2}}
+Categoria: {{3}}
+Urgência: {{4}}
+Descrição do inquilino: {{5}}
+```
+
+**Variáveis:**
+1. Protocolo do ticket (`ticket.protocolo`)
+2. Imóvel — endereço e número/apto juntos (ex: `Rua X, 123, apto 302`)
+3. Categoria (`ticket.categoria` — ex: `hidraulica`, `eletrica`)
+4. Urgência (`ticket.urgencia` — `alta`/`media`/`baixa`)
+5. Descrição do problema relatada pelo inquilino, como veio na conversa
+
+**Exemplo:** `MNT-2026-0001`, `Rua X, 123, apto 302`, `hidraulica`, `alta`,
+`Vazamento no banheiro`
+
+**Consumidor:** `app/agents/a3_manutencao/atendimento.py` (chama
+`notificar_staff_manutencao`, `app/agents/a5_escalonamento/notificacao.py`),
+com os parâmetros montados por
+`app/tools/mensagens_manutencao.py::montar_parametros_notificacao_gestora`.
+
+**Origem — checkup pós-WA-06/WA-08 (Ponto 3):** antes desta correção, o A3
+reutilizava o template `escalonamento_equipe` (3 variáveis:
+protocolo/motivo/descrição) através do notificador genérico `notificar_staff`,
+mas mandava só 1 parâmetro (uma mensagem de texto pronta) — divergência de
+contagem que a Meta rejeitaria com envio real ativo, mesmo passando
+despercebida nos testes unitários (que só checavam a lista recebida pelo
+cliente Python, não a validação de template da Meta). `manutencao_equipe` é
+um template próprio, com suas 5 variáveis; não reaproveita
+`escalonamento_equipe`, que continua exclusivo do A5.
+
+**Observação:** de propósito não inclui `sinais_risco`, o prazo de resposta
+estimado nem a flag de `classificacao_incerta` como variáveis separadas —
+ficam de fora da versão estruturada por ora, mesmo racional já registrado
+pro template `alerta_contratual` (campos objetivos tendem a passar mais
+fácil pela revisão da Meta do que um bloco de texto mais longo). O texto
+livre completo (`montar_notificacao_gestora`, com todos esses dados)
+continua existindo em `app/tools/mensagens_manutencao.py`, só não é mais o
+que vai no envio real — quem revisar este template pode decidir depois se
+algum desses campos merece virar uma 6ª variável.
+
+**Status operacional:** consumido pelo código, mas sem cadastro, submissão
+ou aprovação presumidos na Meta. A ativação real depende dessas etapas
+externas (mesma ressalva dos templates 8–11).
+
+---
+
 ## Resumo — variável de ambiente de destino por template
 
 | Template | Destinatário | Variável de ambiente |
@@ -271,6 +325,7 @@ WA-05 e parâmetros separados pela WA-08.
 | `comprovante_para_conferencia`, `pagamento_combinado`, `comprovante_sem_correspondencia`, `pagamento_combinado_resolucao_manual` | Fernanda (staff) | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `alerta_contratual` | Equipe (Domingos/Fernanda) | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `escalonamento_equipe` | Equipe | `WHATSAPP_STAFF_PHONE_NUMBER` |
+| `manutencao_equipe` | Equipe | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `retomada_atendimento`, `pagamento_confirmado` | Inquilino | `contrato.telefone_whatsapp` |
 
 ---

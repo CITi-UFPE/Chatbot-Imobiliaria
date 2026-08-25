@@ -445,3 +445,69 @@ class TestNotificarStaff:
                 "pt_BR",
             )
         ]
+
+
+# ======================================================================
+# A3 — notificar_staff_manutencao — template próprio (checkup pós-WA-06/WA-08)
+# ======================================================================
+
+
+class TestNotificarStaffManutencao:
+    """notificar_staff_manutencao usa o template manutencao_equipe (5
+    variáveis), não escalonamento_equipe (3) — o A3 reutilizava o último com
+    só 1 parâmetro, o que a Meta rejeitaria com envio real ativo."""
+
+    _PARAMETROS = [
+        "MNT-2026-0001",
+        "Rua X, 123, apto 302",
+        "hidraulica",
+        "alta",
+        "Vazamento no banheiro",
+    ]
+
+    def test_modo_simulado_nao_exige_telefone_nem_faz_rede(self):
+        resultado = notif_a5.notificar_staff_manutencao(self._PARAMETROS)
+
+        assert resultado is None
+
+    def test_ativo_sem_telefone_staff_levanta_erro_claro(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_ENVIO_ATIVO", "true")
+
+        with pytest.raises(RuntimeError, match="WHATSAPP_STAFF_PHONE_NUMBER"):
+            notif_a5.notificar_staff_manutencao(self._PARAMETROS)
+
+    def test_ativo_usa_template_e_cinco_parametros_na_ordem_recebida(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_ENVIO_ATIVO", "true")
+        monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "+5581988887777")
+        chamadas = []
+
+        def fake_enviar_template(telefone, nome, parametros, lang="pt_BR"):
+            chamadas.append((telefone, nome, parametros, lang))
+            return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.MNT1")
+
+        monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
+
+        notif_a5.notificar_staff_manutencao(self._PARAMETROS)
+
+        assert chamadas == [
+            ("+5581988887777", notif_a5._TEMPLATE_MANUTENCAO_EQUIPE, self._PARAMETROS, "pt_BR")
+        ]
+        # nunca usa o template de escalonamento por engano
+        assert notif_a5._TEMPLATE_MANUTENCAO_EQUIPE != notif_a5._TEMPLATE_ESCALONAMENTO_EQUIPE
+
+    def test_falha_do_cliente_propaga_e_loga_telefone_mascarado(self, monkeypatch, caplog):
+        monkeypatch.setenv("WHATSAPP_ENVIO_ATIVO", "true")
+        monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "+5581988887777")
+
+        def enviar_template_com_falha(*args, **kwargs):
+            raise wc.WhatsAppTransientError("Meta fora do ar")
+
+        monkeypatch.setattr(wc, "enviar_template", enviar_template_com_falha)
+
+        telefone_staff = "+5581988887777"
+        with caplog.at_level("ERROR"):
+            with pytest.raises(wc.WhatsAppTransientError):
+                notif_a5.notificar_staff_manutencao(self._PARAMETROS)
+
+        assert telefone_staff not in caplog.text
+        assert wc.mascarar_telefone(telefone_staff) in caplog.text
