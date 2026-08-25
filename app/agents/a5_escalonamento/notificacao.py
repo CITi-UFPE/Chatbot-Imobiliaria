@@ -23,27 +23,27 @@ tests/test_a4_whatsapp_notification.py.
 import logging
 
 from app.tools import whatsapp_client
+from app.tools.whatsapp_message_policy import MensagemTemplate, enviar_saida
 
 logger = logging.getLogger(__name__)
 
-# O catálogo (docs/whatsapp/templates-meta.md) desenha este template com 3
-# variáveis (protocolo, motivo, descricao) — mas notificar_staff só recebe
-# `mensagem` já pronta (assinatura pública preservada, não pode mudar pra
-# receber os 3 campos separados). Por ora o corpo inteiro vai num único
-# parâmetro; separar de fato em 3 variáveis exige mudar quem chama
-# (executar_escalonamento) pra parar de pré-formatar a mensagem, o que fica
-# pra quando o template for de fato submetido à Meta.
 _TEMPLATE_ESCALONAMENTO_EQUIPE = "escalonamento_equipe"
 
 
-def notificar_staff(mensagem: str) -> None:
+def _enviar_template_staff(parametros: list[str]) -> None:
     if not whatsapp_client.envio_ativo():
         logger.info("whatsapp_client: operacao=notificar_staff simulado=True")
         return
 
     destino = whatsapp_client.telefone_staff()
     try:
-        whatsapp_client.enviar_template(destino, _TEMPLATE_ESCALONAMENTO_EQUIPE, [mensagem])
+        enviar_saida(
+            destino,
+            MensagemTemplate(
+                nome=_TEMPLATE_ESCALONAMENTO_EQUIPE,
+                parametros=tuple(parametros),
+            ),
+        )
     except Exception as erro:
         logger.error(
             "whatsapp_client: falha ao enviar (operacao=notificar_staff telefone=%s): %s",
@@ -51,3 +51,19 @@ def notificar_staff(mensagem: str) -> None:
             erro,
         )
         raise
+
+
+def notificar_staff(mensagem: str) -> None:
+    """Compatibilidade do notificador genérico usado pelo A3.
+
+    O A3 ainda fornece apenas uma mensagem pronta de manutenção. Esse fluxo
+    será mantido como veio da WA-05 até existir uma decisão específica de
+    template para manutenção; não deve ser confundido com o template
+    estruturado do escalonamento A5 abaixo.
+    """
+    _enviar_template_staff([mensagem])
+
+
+def notificar_staff_escalonamento(protocolo: str, motivo: str, descricao: str) -> None:
+    """A5 estruturado: protocolo, motivo e descrição na ordem da Meta."""
+    _enviar_template_staff([protocolo, motivo, descricao])

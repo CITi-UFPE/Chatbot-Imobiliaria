@@ -161,7 +161,7 @@ class TestExecutarEscalonamentoSobreviveAFalhaDeNotificacao:
         with patch(
             "app.agents.a5_escalonamento.escalonamento.obter_client_agente", return_value=client_fake
         ), patch(
-            "app.agents.a5_escalonamento.escalonamento.notificar_staff",
+            "app.agents.a5_escalonamento.escalonamento.notificar_staff_escalonamento",
             side_effect=RuntimeError("Meta fora do ar"),
         ):
             protocolo = executar_escalonamento("22222222-2222-2222-2222-222222222222", avaliacao)
@@ -184,11 +184,13 @@ class TestExecutarEscalonamentoSobreviveAFalhaDeNotificacao:
         with patch(
             "app.agents.a5_escalonamento.escalonamento.obter_client_agente", return_value=client_fake
         ), patch(
-            "app.agents.a5_escalonamento.escalonamento.notificar_staff",
-            side_effect=lambda mensagem: chamadas_staff.append(mensagem),
+            "app.agents.a5_escalonamento.escalonamento.notificar_staff_escalonamento",
+            side_effect=lambda protocolo, motivo, descricao: chamadas_staff.append(
+                (protocolo, motivo, descricao)
+            ),
         ):
             protocolo = executar_escalonamento("33333333-3333-3333-3333-333333333333", avaliacao)
 
         assert protocolo == "ESC-2026-00043"
         assert len(chamadas_staff) == 1
-        assert "ESC-2026-00043" in chamadas_staff[0]
+        assert chamadas_staff[0][0] == "ESC-2026-00043"

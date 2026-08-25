@@ -254,12 +254,9 @@ uma pessoa depois de duas tentativas de esclarecimento sobre a cláusula de
 rescisão.`
 
 **Consumidor:** `app/agents/a5_escalonamento/escalonamento.py::executar_escalonamento`
-(chama `notificar_staff`, `app/agents/a5_escalonamento/notificacao.py`) —
-transporte a conectar na WA-05. Mesma dúvida de destino da
-`alerta_contratual`: hoje não existe uma variável de ambiente pro telefone
-de staff usada por `notificar_staff` — recomenda-se reaproveitar
-`WHATSAPP_STAFF_PHONE_NUMBER` (introduzida nesta WA-09) em vez de criar uma
-segunda variável equivalente.
+(chama `notificar_staff_escalonamento`,
+`app/agents/a5_escalonamento/notificacao.py`) — transporte conectado pela
+WA-05 e parâmetros separados pela WA-08.
 
 ---
 
@@ -268,6 +265,84 @@ segunda variável equivalente.
 | Template | Destinatário | Variável de ambiente |
 |---|---|---|
 | `aviso_vencimento`, `aviso_atraso`, `aviso_atraso_severo` | Inquilino | `contrato.telefone_whatsapp` (não é uma env var — vem do registro do contrato) |
-| `comprovante_para_conferencia`, `pagamento_combinado` | Fernanda (staff) | a definir na WA-05/WA-06 — sugestão: reaproveitar `WHATSAPP_STAFF_PHONE_NUMBER` |
+| `comprovante_para_conferencia`, `pagamento_combinado`, `comprovante_sem_correspondencia` | Fernanda (staff) | `WHATSAPP_STAFF_PHONE_NUMBER` após integração da WA-06 |
 | `alerta_contratual` | Equipe (Domingos/Fernanda) | `WHATSAPP_STAFF_PHONE_NUMBER` |
-| `escalonamento_equipe` | Equipe | a definir na WA-05 — sugestão: reaproveitar `WHATSAPP_STAFF_PHONE_NUMBER` |
+| `escalonamento_equipe` | Equipe | `WHATSAPP_STAFF_PHONE_NUMBER` |
+| `retomada_atendimento`, `pagamento_confirmado` | Inquilino | `contrato.telefone_whatsapp` |
+
+---
+
+## 8. `retomada_atendimento`
+
+**Categoria:** Utility · **Idioma:** pt_BR
+
+**Corpo sugerido:**
+```
+Recebemos sua mensagem. Responda a esta conversa para continuarmos o atendimento por aqui.
+```
+
+**Variáveis:** nenhuma.
+
+**Consumidor:** `app/tools/whatsapp_message_policy.py` — fallback quando uma
+resposta reativa não puder comprovar que a janela de 24 horas está aberta.
+Quando o inquilino responder, o agente recalcula a resposta usando o histórico;
+nenhuma resposta pendente é armazenada por esta task.
+
+---
+
+## 9. `pagamento_confirmado`
+
+**Categoria:** Utility · **Idioma:** pt_BR
+
+**Corpo sugerido:**
+```
+Recebemos seu comprovante, {{1}}. Pagamento confirmado, obrigado!
+```
+
+**Variáveis:**
+1. Nome do inquilino.
+
+**Exemplo:** `João Pereira`
+
+**Consumidor futuro:**
+`app/agents/a2_cobranca/notificacao.py::responder_confirmacao_pagamento` —
+usar quando a confirmação da Fernanda ocorrer com a janela do inquilino
+fechada ou indeterminada. Integração pendente da WA-06, que definirá o fluxo
+final do clique e disponibilizará o contrato à política.
+
+---
+
+## 10. `comprovante_sem_correspondencia`
+
+**Categoria:** Utility · **Idioma:** pt_BR
+
+**Corpo sugerido:**
+```
+Comprovante recebido — não foi possível identificar automaticamente a que se refere
+
+Inquilino: {{1}}
+Imóvel: {{2}}
+Valor identificado: R$ {{3}}
+Data identificada: {{4}}
+
+Charges em aberto no contrato:
+{{5}}
+
+O valor não bate com nenhuma delas nem com a soma — resolver manualmente.
+```
+
+**Variáveis:**
+1. Nome do inquilino.
+2. Identificação do imóvel.
+3. Valor identificado ou `não legível`.
+4. Data identificada ou `não legível`.
+5. Lista determinística das charges em aberto.
+
+**Consumidor futuro:**
+`app/agents/a2_cobranca/notificacao.py::notificar_fernanda_sem_match` —
+integração pendente da WA-06 para manter todas as mensagens gerenciais em
+templates e usar o destino de staff definitivo.
+
+**Status operacional dos templates 8–10:** especificados no repositório, mas
+o código não presume cadastro, submissão ou aprovação na Meta. Essas etapas
+continuam externas.

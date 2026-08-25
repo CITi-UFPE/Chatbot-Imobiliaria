@@ -19,7 +19,7 @@ import logging
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from app.agents.a2_cobranca.mensagens import montar_mensagem
+from app.agents.a2_cobranca.mensagens import montar_template_cobranca
 from app.agents.a2_cobranca.notificacao import enviar_mensagem_cobranca
 from app.agents.a2_cobranca.schemas import ChargeAtiva, DadosCobrancaContrato, EstagioCobranca
 from app.agents.a5_escalonamento import AvaliacaoEscalonamento, executar_escalonamento
@@ -134,9 +134,9 @@ def _processar_charge(charge_raw: dict, hoje: date) -> None:
         client_agente = obter_client_agente(charge.contract_id)
         dados_contrato = _buscar_dados_cobranca_contrato(client_agente)
 
-        texto = montar_mensagem(charge, dados_contrato, estagio, dias_atraso_hoje)
+        mensagem = montar_template_cobranca(charge, dados_contrato, estagio, dias_atraso_hoje)
         try:
-            enviar_mensagem_cobranca(dados_contrato.telefone_whatsapp, texto)
+            enviar_mensagem_cobranca(dados_contrato.telefone_whatsapp, mensagem)
             mensagem_enviada_com_sucesso = True
         except Exception:
             # Falha de transporte NÃO pode impedir o recálculo diário de

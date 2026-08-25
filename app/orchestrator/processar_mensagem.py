@@ -42,7 +42,12 @@ from app.orchestrator.orchestrator import (
     rotear_mensagem,
 )
 from app.orchestrator.phone_normalization import gerar_candidatos_telefone_br
-from app.tools.whatsapp_client import enviar_texto, mascarar_telefone
+from app.tools.whatsapp_client import mascarar_telefone
+from app.tools.whatsapp_message_policy import (
+    TEMPLATE_RETOMADA_ATENDIMENTO,
+    decidir_saida_para_contrato,
+    enviar_saida,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +117,11 @@ def processar_mensagem_recebida(payload: dict, *, responder_via_whatsapp: bool =
 
 
 def _enviar_resposta_se_necessario(
-    telefone: Optional[str], resposta: Optional[str], responder_via_whatsapp: bool
+    telefone: Optional[str],
+    resposta: Optional[str],
+    responder_via_whatsapp: bool,
+    *,
+    client_agente=None,
 ) -> None:
     """Envia `resposta` ao remetente pelo WhatsApp real, quando solicitado.
 
@@ -125,7 +134,13 @@ def _enviar_resposta_se_necessario(
     if not responder_via_whatsapp or not telefone or not resposta:
         return
     try:
-        enviar_texto(telefone, resposta)
+        saida = decidir_saida_para_contrato(
+            client_agente,
+            reativa=True,
+            texto=resposta,
+            template=TEMPLATE_RETOMADA_ATENDIMENTO,
+        )
+        enviar_saida(telefone, saida)
     except Exception:
         logger.exception(
             "Falha ao enviar resposta via WhatsApp para %s (efeitos do agente já concluídos).",
@@ -161,6 +176,7 @@ def _processar_mensagem_texto(mensagem: dict, *, responder_via_whatsapp: bool = 
         _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
         return resposta
 
+    client = None
     try:
         client = obter_client_agente(contract_id)
         _registrar_log_mensagem(
@@ -171,7 +187,12 @@ def _processar_mensagem_texto(mensagem: dict, *, responder_via_whatsapp: bool = 
     except Exception:
         logger.exception("Falha ao processar mensagem para contrato %s", contract_id)
         resposta = "Erro ao processar a mensagem (ver logs)."
-        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        _enviar_resposta_se_necessario(
+            telefone,
+            resposta,
+            responder_via_whatsapp,
+            client_agente=client,
+        )
         return resposta
 
     try:
@@ -190,7 +211,12 @@ def _processar_mensagem_texto(mensagem: dict, *, responder_via_whatsapp: bool = 
         # já aplicado ao fluxo de comprovante, ver _processar_comprovante).
         logger.exception("Falha ao registrar resposta do agente para contrato %s", contract_id)
 
-    _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+    _enviar_resposta_se_necessario(
+        telefone,
+        resposta,
+        responder_via_whatsapp,
+        client_agente=client,
+    )
     return resposta
 
 
@@ -244,6 +270,7 @@ def _processar_comprovante(mensagem: dict, *, responder_via_whatsapp: bool = Fal
 
     resposta, agente_responsavel = rotear_comprovante_a2(contract_id, imagem_base64, media_type)
 
+    client = None
     try:
         client = obter_client_agente(contract_id)
         _registrar_log_mensagem(
@@ -269,7 +296,12 @@ def _processar_comprovante(mensagem: dict, *, responder_via_whatsapp: bool = Fal
         # registro e segue devolvendo a resposta real.
         logger.exception("Falha ao registrar log de comprovante para contrato %s", contract_id)
 
-    _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+    _enviar_resposta_se_necessario(
+        telefone,
+        resposta,
+        responder_via_whatsapp,
+        client_agente=client,
+    )
     return resposta
 
 

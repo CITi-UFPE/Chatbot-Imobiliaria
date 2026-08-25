@@ -14,6 +14,7 @@ import pytest
 from app.agents.a2_cobranca import notificacao as notif_a2
 from app.agents.a5_escalonamento import notificacao as notif_a5
 from app.tools import whatsapp_client as wc
+from app.tools.whatsapp_message_policy import MensagemTemplate
 
 
 @pytest.fixture(autouse=True)
@@ -34,9 +35,12 @@ def _kill_switch_desligado_por_padrao(monkeypatch):
 
 class TestEnviarMensagemCobranca:
     def test_modo_simulado_nao_faz_rede_nem_exige_configuracao(self):
-        notif_a2.enviar_mensagem_cobranca("+5581999990000", "Lembrete de pagamento.")
+        notif_a2.enviar_mensagem_cobranca(
+            "+5581999990000",
+            MensagemTemplate(nome="aviso_vencimento", parametros=("João", "aluguel", "10/09/2026")),
+        )
 
-    def test_sucesso_chama_enviar_template_com_texto_como_parametro(self, monkeypatch):
+    def test_sucesso_chama_enviar_template_estruturado(self, monkeypatch):
         chamadas = []
 
         def fake_enviar_template(telefone, nome, parametros, lang="pt_BR"):
@@ -45,10 +49,18 @@ class TestEnviarMensagemCobranca:
 
         monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
 
-        notif_a2.enviar_mensagem_cobranca("+5581999990000", "Lembrete de pagamento.")
+        mensagem = MensagemTemplate(
+            nome="aviso_vencimento",
+            parametros=("João", "o aluguel do Apto 305", "10/09/2026"),
+        )
+        notif_a2.enviar_mensagem_cobranca("+5581999990000", mensagem)
 
         assert chamadas == [
-            ("+5581999990000", notif_a2._TEMPLATE_COBRANCA_MENSAGEM, ["Lembrete de pagamento."])
+            (
+                "+5581999990000",
+                "aviso_vencimento",
+                ["João", "o aluguel do Apto 305", "10/09/2026"],
+            )
         ]
 
     def test_falha_do_cliente_propaga_e_loga_telefone_mascarado(self, monkeypatch, caplog):
@@ -60,7 +72,10 @@ class TestEnviarMensagemCobranca:
         telefone = "+5581999990000"
         with caplog.at_level("ERROR"):
             with pytest.raises(wc.WhatsAppTransientError):
-                notif_a2.enviar_mensagem_cobranca(telefone, "Lembrete de pagamento.")
+                notif_a2.enviar_mensagem_cobranca(
+                    telefone,
+                    MensagemTemplate(nome="aviso_vencimento"),
+                )
 
         assert telefone not in caplog.text
         assert wc.mascarar_telefone(telefone) in caplog.text
@@ -280,3 +295,29 @@ class TestNotificarStaff:
 
         assert telefone_staff not in caplog.text
         assert wc.mascarar_telefone(telefone_staff) in caplog.text
+
+    def test_escalonamento_usa_tres_parametros_na_ordem_meta(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_ENVIO_ATIVO", "true")
+        monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "+5581988887777")
+        chamadas = []
+
+        def fake_enviar_template(telefone, nome, parametros, lang="pt_BR"):
+            chamadas.append((telefone, nome, parametros, lang))
+            return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.ESC2")
+
+        monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
+
+        notif_a5.notificar_staff_escalonamento(
+            "ESC-2026-00042",
+            "pedido_humano",
+            "Inquilino pediu atendimento humano.",
+        )
+
+        assert chamadas == [
+            (
+                "+5581988887777",
+                "escalonamento_equipe",
+                ["ESC-2026-00042", "pedido_humano", "Inquilino pediu atendimento humano."],
+                "pt_BR",
+            )
+        ]
