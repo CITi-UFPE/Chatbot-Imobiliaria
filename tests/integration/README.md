@@ -7,7 +7,7 @@ Sem `.env.test` preenchido, **toda a suíte é pulada** (não falha "quebrada") 
 ## 1. Provisionar o projeto Supabase de teste
 
 1. Crie um projeto Supabase **novo e separado** do de produção, mesma região (`sa-east-1` — ver `docs/setup-supabase.md`, seção 1). Nunca reutilize o projeto de produção aqui: os testes fazem `delete` de contratos fictícios e mutam estado (finalização automática, negociação) — não é algo que se queira perto de dado real.
-2. No **SQL Editor** do novo projeto, rode `docs/schemas/001_create_tables.sql` até `015_agente_com_conversa_ativa.sql`, **em ordem** (várias migrations posteriores dependem de função/coluna criada nas anteriores — ver a lista comentada em `docs/setup-supabase.md`, seção 2). Alternativa via `psql`, uma vez que você tenha `SUPABASE_TEST_DB_URL` (passo 3):
+2. No **SQL Editor** do novo projeto, rode todas as migrations de `docs/schemas/001_create_tables.sql` até `019_normalizacao_telefone.sql`, **em ordem** (há dois arquivos históricos `018` e ambos vêm antes da `019`; várias migrations posteriores dependem de função/coluna criada nas anteriores — ver a lista comentada em `docs/setup-supabase.md`, seção 2). Alternativa via `psql`, uma vez que você tenha `SUPABASE_TEST_DB_URL` (passo 3):
 
    ```bash
    for f in docs/schemas/0*.sql; do
@@ -62,8 +62,10 @@ A2 (`test_a2_cobranca_integration.py`) e A4 (`test_a4_gestao_contratual_integrat
 | 6 | `contrato_para_escalonamento` | Escalonamento simples (motivo ≠ `desconto_renegociacao`) — protocolo sequencial |
 | 7 | `contrato_para_manutencao` | Ciclo completo da máquina de estados do A3 |
 | 8 | `contrato_outro_para_isolamento` | Segundo contrato "qualquer", só para os testes de isolamento por RLS |
+| 9 | `contrato_telefone_movel_legado` | Telefone móvel gravado com apresentação e sem nono dígito |
+| 10 | `contrato_telefone_fixo` | Telefone fixo, sem geração de variante móvel |
 
-Limpeza: cada fixture apaga seu próprio contrato ao final (o `on delete cascade` até `contracts` cuida do resto — charges, cláusulas, escalations, tickets, alerts, logs, estado de conversa). Uma fixture de sessão (`_limpeza_defensiva_de_sessao`) também limpa qualquer telefone órfão do intervalo `+551199990001`–`019` antes e depois da sessão inteira, cobrindo o caso de uma execução anterior ter quebrado no meio. A suíte pode ser rodada 2x seguidas sem reset manual do banco.
+Limpeza: cada fixture apaga seu próprio contrato ao final (o `on delete cascade` até `contracts` cuida do resto — charges, cláusulas, escalations, tickets, alerts, logs, estado de conversa). Uma fixture de sessão (`_limpeza_defensiva_de_sessao`) também limpa qualquer telefone órfão do intervalo `+551199990001`–`019` e os números dedicados à normalização antes e depois da sessão inteira, cobrindo o caso de uma execução anterior ter quebrado no meio. A suíte pode ser rodada 2x seguidas sem reset manual do banco.
 
 ## 6. Cenários transversais (`test_rls_isolamento.py`)
 

@@ -41,6 +41,7 @@ from app.orchestrator.orchestrator import (
     rotear_comprovante_a2,
     rotear_mensagem,
 )
+from app.orchestrator.phone_normalization import gerar_candidatos_telefone_br
 from app.tools.whatsapp_client import enviar_texto, mascarar_telefone
 
 logger = logging.getLogger(__name__)
@@ -306,17 +307,23 @@ def _resolver_contract_id(telefone_whatsapp: str) -> str | None:
     """Descobre o contract_id ativo vinculado a um número de WhatsApp.
 
     Usa um client "anon" (sem token assinado) chamando a RPC
-    resolver_contrato_por_telefone (docs/schemas/004_...) — não a
+    resolver_contrato_por_telefone (atualizada pela Migration 019) — não a
     service_role key. Antes de ter o contract_id ainda não dá para montar o
     JWT escopado do agente (é exatamente o dado que falta pra assinar o
     token), então esta é a única chamada ao Supabase neste módulo que não
     passa por obter_client_agente().
     """
+    candidatos = gerar_candidatos_telefone_br(telefone_whatsapp)
+    if not candidatos:
+        return None
+
     url = os.environ.get("SUPABASE_URL")
     anon_key = os.environ.get("SUPABASE_ANON_KEY")
     if not url or not anon_key:
         raise RuntimeError("SUPABASE_URL / SUPABASE_ANON_KEY não configurados.")
 
     client = create_client(url, anon_key)
-    resposta = client.rpc("resolver_contrato_por_telefone", {"p_telefone": telefone_whatsapp}).execute()
+    resposta = client.rpc(
+        "resolver_contrato_por_telefone", {"p_telefone": candidatos[0]}
+    ).execute()
     return resposta.data
