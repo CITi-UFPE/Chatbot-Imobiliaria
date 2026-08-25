@@ -26,7 +26,7 @@ import anthropic
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.a5_escalonamento.criterios import CRITERIOS
-from app.agents.a5_escalonamento.notificacao import notificar_staff
+from app.agents.a5_escalonamento.notificacao import notificar_staff_escalonamento
 from app.orchestrator.agent_auth import obter_client_agente
 
 logger = logging.getLogger(__name__)
@@ -146,11 +146,7 @@ def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) 
     protocolo = resposta.data
 
     try:
-        notificar_staff(
-            f"Novo caso escalado — protocolo {protocolo}\n"
-            f"Motivo: {avaliacao.motivo}\n"
-            f"{avaliacao.descricao}"
-        )
+        notificar_staff_escalonamento(str(protocolo), avaliacao.motivo, avaliacao.descricao)
     except Exception:
         logger.exception(
             "Falha ao notificar a equipe sobre o escalonamento %s (contrato %s) — "

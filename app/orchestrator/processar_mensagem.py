@@ -28,6 +28,7 @@ Três tipos de mensagem tratados, cada um com seu próprio caminho:
 Roteamento de intenção real entre A1-A5 vive em app/orchestrator/orchestrator.py.
 """
 
+import base64
 import logging
 import os
 from typing import Optional
@@ -42,7 +43,12 @@ from app.orchestrator.orchestrator import (
     rotear_mensagem,
 )
 from app.orchestrator.phone_normalization import gerar_candidatos_telefone_br
-from app.tools.whatsapp_client import enviar_texto, mascarar_telefone
+from app.tools.whatsapp_client import baixar_midia, mascarar_telefone
+from app.tools.whatsapp_message_policy import (
+    TEMPLATE_RETOMADA_ATENDIMENTO,
+    decidir_saida_para_contrato,
+    enviar_saida,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +118,11 @@ def processar_mensagem_recebida(payload: dict, *, responder_via_whatsapp: bool =
 
 
 def _enviar_resposta_se_necessario(
-    telefone: Optional[str], resposta: Optional[str], responder_via_whatsapp: bool
+    telefone: Optional[str],
+    resposta: Optional[str],
+    responder_via_whatsapp: bool,
+    *,
+    client_agente=None,
 ) -> None:
     """Envia `resposta` ao remetente pelo WhatsApp real, quando solicitado.
 
@@ -125,7 +135,13 @@ def _enviar_resposta_se_necessario(
     if not responder_via_whatsapp or not telefone or not resposta:
         return
     try:
-        enviar_texto(telefone, resposta)
+        saida = decidir_saida_para_contrato(
+            client_agente,
+            reativa=True,
+            texto=resposta,
+            template=TEMPLATE_RETOMADA_ATENDIMENTO,
+        )
+        enviar_saida(telefone, saida)
     except Exception:
         logger.exception(
             "Falha ao enviar resposta via WhatsApp para %s (efeitos do agente já concluídos).",
@@ -161,6 +177,7 @@ def _processar_mensagem_texto(mensagem: dict, *, responder_via_whatsapp: bool = 
         _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
         return resposta
 
+    client = None
     try:
         client = obter_client_agente(contract_id)
         _registrar_log_mensagem(
@@ -171,7 +188,12 @@ def _processar_mensagem_texto(mensagem: dict, *, responder_via_whatsapp: bool = 
     except Exception:
         logger.exception("Falha ao processar mensagem para contrato %s", contract_id)
         resposta = "Erro ao processar a mensagem (ver logs)."
-        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        _enviar_resposta_se_necessario(
+            telefone,
+            resposta,
+            responder_via_whatsapp,
+            client_agente=client,
+        )
         return resposta
 
     try:
@@ -190,7 +212,12 @@ def _processar_mensagem_texto(mensagem: dict, *, responder_via_whatsapp: bool = 
         # já aplicado ao fluxo de comprovante, ver _processar_comprovante).
         logger.exception("Falha ao registrar resposta do agente para contrato %s", contract_id)
 
-    _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+    _enviar_resposta_se_necessario(
+        telefone,
+        resposta,
+        responder_via_whatsapp,
+        client_agente=client,
+    )
     return resposta
 
 
@@ -218,7 +245,7 @@ def _processar_comprovante(mensagem: dict, *, responder_via_whatsapp: bool = Fal
     imagem_base64 = midia.get("_dados_base64")
     if imagem_base64 is None:
         try:
-            imagem_base64 = _baixar_midia_whatsapp(midia.get("id"))
+            imagem_base64, media_type = _baixar_midia_whatsapp(midia.get("id"))
         except Exception:
             logger.exception("Falha ao baixar mídia %s do WhatsApp.", midia.get("id"))
             resposta = (
@@ -244,6 +271,7 @@ def _processar_comprovante(mensagem: dict, *, responder_via_whatsapp: bool = Fal
 
     resposta, agente_responsavel = rotear_comprovante_a2(contract_id, imagem_base64, media_type)
 
+    client = None
     try:
         client = obter_client_agente(contract_id)
         _registrar_log_mensagem(
@@ -269,7 +297,12 @@ def _processar_comprovante(mensagem: dict, *, responder_via_whatsapp: bool = Fal
         # registro e segue devolvendo a resposta real.
         logger.exception("Falha ao registrar log de comprovante para contrato %s", contract_id)
 
-    _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+    _enviar_resposta_se_necessario(
+        telefone,
+        resposta,
+        responder_via_whatsapp,
+        client_agente=client,
+    )
     return resposta
 
 
@@ -292,19 +325,28 @@ def _processar_clique_botao(mensagem: dict) -> Optional[str]:
     return rotear_clique_botao_a2(button_id, telefone_remetente)
 
 
-def _baixar_midia_whatsapp(media_id: Optional[str]) -> str:
+def _baixar_midia_whatsapp(media_id: Optional[str]) -> tuple[str, str]:
     """Baixa o arquivo de mídia real da Meta Cloud API a partir do media_id
-    do webhook — exige WHATSAPP_ACCESS_TOKEN (ainda não configurado, mesma
-    lacuna documentada em app/agents/a2_cobranca/notificacao.py). Sempre
-    levanta por ora; quando o token existir, trocar pelo GET autenticado
-    (1. GET /{media_id} pra resolver a URL assinada, 2. GET nessa URL pra
-    baixar o conteúdo) + base64-encode do resultado."""
-    if not os.environ.get("WHATSAPP_ACCESS_TOKEN") or not media_id:
-        raise RuntimeError(
-            "Download de mídia real do WhatsApp ainda não implementado "
-            "(sem WHATSAPP_ACCESS_TOKEN configurado)."
-        )
-    raise NotImplementedError("Download de mídia via Meta Cloud API ainda não implementado.")
+    do webhook, usando o cliente já implementado em app/tools/whatsapp_client.py
+    (WA-03: metadados + URL assinada + download em streaming com limite de
+    tamanho, MIME validado, host da URL de download validado contra a
+    allowlist oficial da Meta). Não reimplementa nenhuma chamada HTTP aqui —
+    só adapta o resultado (bytes) pra base64, que é o formato que
+    rotear_comprovante_a2/A2 já esperam desde o chat simulado.
+
+    Devolve (base64, mime_type) — o mime_type é o que a Meta REPORTOU no
+    download real, não o que veio no payload inicial do webhook (podem
+    divergir; o metadados da Meta é a fonte de verdade, ver Ponto 1 do
+    checkup do Daniel).
+
+    Configuração ausente (WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID) ou
+    qualquer falha de rede/validação propaga como exceção — quem chama
+    (_processar_comprovante) já trata isso com um fallback controlado pro
+    inquilino, não precisa ser tratado aqui dentro."""
+    if not media_id:
+        raise RuntimeError("Payload de mídia sem media_id.")
+    resultado = baixar_midia(media_id)
+    return base64.b64encode(resultado.conteudo).decode("ascii"), resultado.mime_type
 
 
 def _resolver_contract_id(telefone_whatsapp: str) -> str | None:

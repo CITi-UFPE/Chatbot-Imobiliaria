@@ -17,8 +17,10 @@ Regra de decisão (Caso A / Caso B), por ordem:
         manda Confirmar/Valor diverge pra Fernanda, com nota de que foi
         detecção automática por valor.
      b) valor bate (dentro de margem) com a SOMA de todas -> pagamento
-        combinado (ex: aluguel + água na mesma PIX). Notifica com 3 botões:
-        Cobre os dois / Só uma delas / Valor diverge.
+        combinado (ex: aluguel + água na mesma PIX). Se forem exatamente
+        uma água e um aluguel, notifica com 3 botões: Cobre os dois /
+        Água paga / Aluguel pago. Tipos repetidos ou 3+ cobranças vão
+        para resolução manual, sem alteração de status.
      c) não bate com nenhuma individual nem com a soma -> não tenta
         adivinhar. Notifica a Fernanda listando as charges em aberto, sem
         marcar nenhuma automaticamente, pra ela resolver manualmente (mesmo
@@ -42,6 +44,7 @@ import anthropic
 from app.agents.a2_cobranca.notificacao import (
     notificar_fernanda_comprovante,
     notificar_fernanda_pagamento_combinado,
+    notificar_fernanda_pagamento_combinado_manual,
     notificar_fernanda_sem_match,
     notificar_pergunta_qual_charge_paga,
     responder_confirmacao_pagamento,
@@ -123,7 +126,7 @@ def _dentro_da_margem(valor_a: float, valor_b: float) -> bool:
 def _buscar_charges_abertas(client_agente, contract_id: str) -> list[dict]:
     resposta = (
         client_agente.table("charges")
-        .select("id, tipo, valor_esperado")
+        .select("id, tipo, valor_esperado, data_vencimento")
         .eq("contract_id", contract_id)
         .in_("status", STATUS_CHARGES_ABERTAS)
         .execute()
@@ -165,7 +168,9 @@ def _resolver_charge_e_notificar(
     outro canal. Os ramos SEM gravação prévia (charges_abertas vazio, valor
     ausente, B.c) não precisam desse cuidado — não há nada "já feito" que
     a falha possa mascarar."""
-    telefone_fernanda = ""  # TODO: número/ID da Fernanda — não decidido nesta task
+    # O notificador resolve WHATSAPP_STAFF_PHONE_NUMBER quando o envio real
+    # está ativo. O valor vazio preserva o modo simulado sem exigir env var.
+    telefone_fernanda = ""
     nome = dados_contrato.get("inquilino_nome", "")
     imovel = dados_contrato.get("imovel_identificacao", "")
 
@@ -237,12 +242,24 @@ def _resolver_charge_e_notificar(
             )
         return
 
-    # B.b — bate com a soma de todas (pagamento combinado). Marca todas como
-    # aguardando_confirmacao (tentativa) — se Fernanda escolher "Só uma
-    # delas" depois, o fluxo de duas etapas (WA-06, ver
-    # notificar_pergunta_qual_charge_paga / marcar_apenas_uma_paga) já
-    # cuida de reverter as demais pra 'pendente' sozinho.
+    # B.b — bate com a soma de todas. A automação só é segura quando há
+    # exatamente uma cobrança de água e uma de aluguel. Qualquer outra
+    # combinação vai para a plataforma sem mudar status, para que as
+    # cobranças continuem visíveis no fluxo normal.
     if bate_com_soma:
+        tipos = [c.get("tipo") for c in charges_abertas]
+        combinacao_direta = len(charges_abertas) == 2 and set(tipos) == {"agua", "aluguel"}
+        if not combinacao_direta:
+            notificar_fernanda_pagamento_combinado_manual(
+                telefone_fernanda,
+                nome,
+                imovel,
+                extraido.valor_identificado,
+                extraido.data_identificada,
+                charges_em_aberto=charges_abertas,
+            )
+            return
+
         for c in charges_abertas:
             _marcar_aguardando_confirmacao(client_agente, c["id"], extraido)
         try:
@@ -320,6 +337,7 @@ def confirmar_pagamento(contract_id: str, charge_id: str) -> None:
 
     dados_contrato = client_agente.rpc("buscar_dados_cobranca_contrato", {}).execute().data or {}
     responder_confirmacao_pagamento(
+        client_agente=client_agente,
         telefone_whatsapp=dados_contrato.get("telefone_whatsapp", ""),
         nome_inquilino=dados_contrato.get("inquilino_nome", ""),
     )
@@ -367,6 +385,7 @@ def confirmar_pagamento_combinado(contract_id: str, charge_ids: list[str]) -> No
 
     dados_contrato = client_agente.rpc("buscar_dados_cobranca_contrato", {}).execute().data or {}
     responder_confirmacao_pagamento(
+        client_agente=client_agente,
         telefone_whatsapp=dados_contrato.get("telefone_whatsapp", ""),
         nome_inquilino=dados_contrato.get("inquilino_nome", ""),
     )
@@ -375,13 +394,12 @@ def confirmar_pagamento_combinado(contract_id: str, charge_ids: list[str]) -> No
 def iniciar_escolha_pagamento_parcial(
     contract_id: str, charge_ids: list[str], telefone_fernanda: str
 ) -> None:
-    """Chamado quando Fernanda aperta 'Só uma delas' (1ª etapa, ver
-    button_ids.py e notificacao.py) — NÃO confirma nem reverte nenhuma
-    charge ainda. Só busca o `tipo` de cada charge envolvida (pra montar um
-    botão legível — "Aluguel", "Água" — na 2ª etapa) e dispara a pergunta
-    de verdade (notificar_pergunta_qual_charge_paga), que é quem carrega o
-    botão específico de cada charge. `marcar_apenas_uma_paga` abaixo só é
-    chamada depois que ELA responder qual foi."""
+    """Processa um callback legado de 'Só uma delas' sem alterar status.
+
+    Mensagens novas não geram este botão. Para mensagens antigas, busca o
+    tipo das cobranças e envia a pergunta de compatibilidade; somente a
+    resposta específica chama `marcar_apenas_uma_paga`.
+    """
     client_agente = obter_client_agente(contract_id)
     resposta = client_agente.table("charges").select("id, tipo").in_("id", charge_ids).execute()
     charges = resposta.data or []
@@ -391,12 +409,11 @@ def iniciar_escolha_pagamento_parcial(
 def marcar_apenas_uma_paga(
     contract_id: str, charge_id_paga: str, charge_ids_restantes: list[str]
 ) -> None:
-    """Chamado quando Fernanda já respondeu, na 2ª etapa (ver
-    iniciar_escolha_pagamento_parcial acima), qual charge especificamente
-    foi paga — o comprovante NÃO cobre todas as charges que tinham sido
-    marcadas como aguardando_confirmacao no pagamento combinado; só uma foi
-    paga de fato. charge_id_paga já chega resolvido sem ambiguidade (o
-    clique da 2ª etapa é por charge, não mais por "algumas delas").
+    """Confirma uma cobrança e devolve as demais ao fluxo do cron.
+
+    É usada diretamente pelos botões novos "Água paga"/"Aluguel pago" e
+    também pela segunda etapa de mensagens antigas. `charge_id_paga` chega
+    resolvido sem ambiguidade no payload do botão.
 
     As demais voltam para status='pendente' (não 'atrasado' direto) — o
     próximo cron diário recalcula dias_atraso do zero a partir da data real
@@ -431,6 +448,7 @@ def marcar_apenas_uma_paga(
 
     dados_contrato = client_agente.rpc("buscar_dados_cobranca_contrato", {}).execute().data or {}
     responder_confirmacao_pagamento(
+        client_agente=client_agente,
         telefone_whatsapp=dados_contrato.get("telefone_whatsapp", ""),
         nome_inquilino=dados_contrato.get("inquilino_nome", ""),
     )

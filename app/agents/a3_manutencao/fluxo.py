@@ -4,7 +4,11 @@ from pydantic import BaseModel
 
 from app.models.maintenance import ClassificacaoManutencao, TicketManutencao, UrgenciaManutencao
 from app.tools.maintenance_classification import classificar_manutencao, gerar_pergunta_esclarecimento
-from app.tools.mensagens_manutencao import montar_confirmacao_inquilino, montar_notificacao_gestora
+from app.tools.mensagens_manutencao import (
+    montar_confirmacao_inquilino,
+    montar_notificacao_gestora,
+    montar_parametros_notificacao_gestora,
+)
 from app.tools.text_matching import contem_palavra
 
 # Limiares separados (mesmo valor de partida, 0.7) porque errar a urgência é mais
@@ -51,6 +55,13 @@ class ResultadoTurno(BaseModel):
     resposta_inquilino: str
     ticket: Optional[TicketManutencao] = None
     notificacao_gestora: Optional[str] = None
+    # NOVO (checkup pós-WA-06/WA-08, Ponto 3): parâmetros posicionais pro
+    # template manutencao_equipe (protocolo, imóvel, categoria, urgência,
+    # descrição) — o que app/agents/a3_manutencao/atendimento.py de fato usa
+    # pra notificar a equipe agora. `notificacao_gestora` (texto livre) é
+    # mantido por compatibilidade (assinatura pública existente, testes
+    # atuais checam esse campo) mas não é mais o que vai no envio real.
+    notificacao_gestora_parametros: Optional[list[str]] = None
     escalonado: bool = False
 
 
@@ -83,6 +94,9 @@ def _abrir_ticket_e_notificar(
 ) -> ResultadoTurno:
     ticket = abrir_ticket_fn(classificacao, descricao_inquilino, classificacao_incerta)
     notificacao = montar_notificacao_gestora(ticket, imovel_endereco, imovel_numero, descricao_inquilino)
+    parametros_notificacao = montar_parametros_notificacao_gestora(
+        ticket, imovel_endereco, imovel_numero, descricao_inquilino
+    )
     resposta = montar_confirmacao_inquilino(ticket)
 
     return ResultadoTurno(
@@ -90,6 +104,7 @@ def _abrir_ticket_e_notificar(
         resposta_inquilino=resposta,
         ticket=ticket,
         notificacao_gestora=notificacao,
+        notificacao_gestora_parametros=parametros_notificacao,
     )
 
 

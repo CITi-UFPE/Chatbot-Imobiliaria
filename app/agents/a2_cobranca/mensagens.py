@@ -25,6 +25,7 @@ charges.mensagem_estagio só aceita literalmente 'd-5' no CHECK constraint
 """
 
 from app.agents.a2_cobranca.schemas import ChargeAtiva, DadosCobrancaContrato, EstagioCobranca
+from app.tools.whatsapp_message_policy import MensagemTemplate
 
 # Generalização de propósito: hoje só 'agua' é um tipo válido em
 # charges.tipo (Migration 001), mas a mensagem de "conta" é escrita para
@@ -187,3 +188,72 @@ def montar_mensagem(
     if charge.tipo == "aluguel":
         return _montar_mensagem_aluguel(charge, dados, estagio, dias_atraso)
     return _montar_mensagem_conta(charge, dados, estagio, dias_atraso)
+
+
+def _formatar_valor_template(valor: float) -> str:
+    """Formata moeda brasileira sem ``R$`` (o corpo Meta já inclui o rótulo)."""
+    formato_internacional = f"{valor:,.2f}"
+    return formato_internacional.translate(str.maketrans({",": ".", ".": ","}))
+
+
+def _descricao_debito(charge: ChargeAtiva, dados: DadosCobrancaContrato) -> str:
+    if charge.tipo == "aluguel":
+        return f"o aluguel do {dados.imovel_identificacao}"
+    return f"sua conta de {_rotulo_conta(charge.tipo)}"
+
+
+def montar_template_cobranca(
+    charge: ChargeAtiva,
+    dados: DadosCobrancaContrato,
+    estagio: EstagioCobranca,
+    dias_atraso: int,
+) -> MensagemTemplate:
+    """Monta os parâmetros posicionais dos templates Meta do cron.
+
+    Não altera nem reaproveita como parâmetro único os textos validados de
+    ``montar_mensagem``. Os dados são derivados dos mesmos modelos de domínio
+    e seguem exatamente a ordem documentada em
+    ``docs/whatsapp/templates-meta.md``.
+    """
+    nome = dados.inquilino_nome
+    descricao = _descricao_debito(charge, dados)
+    vencimento = charge.data_vencimento.strftime("%d/%m/%Y")
+
+    if estagio in ("d-5", "d0"):
+        return MensagemTemplate(
+            nome="aviso_vencimento",
+            parametros=(nome, descricao, vencimento),
+        )
+
+    valor_multa, valor_juros, valor_total = _calcular_encargos(
+        charge.valor_esperado,
+        dias_atraso,
+        dados.multa_moratoria_percentual,
+        dados.juros_moratorio_mensal,
+    )
+
+    if estagio in ("d+5", "d+10"):
+        return MensagemTemplate(
+            nome="aviso_atraso",
+            parametros=(
+                nome,
+                descricao,
+                vencimento,
+                str(dias_atraso),
+                _formatar_valor_template(charge.valor_esperado),
+                _formatar_valor_template(valor_multa),
+                _formatar_valor_template(valor_juros),
+                _formatar_valor_template(valor_total),
+            ),
+        )
+
+    return MensagemTemplate(
+        nome="aviso_atraso_severo",
+        parametros=(
+            nome,
+            descricao,
+            vencimento,
+            str(dias_atraso),
+            _formatar_valor_template(valor_total),
+        ),
+    )

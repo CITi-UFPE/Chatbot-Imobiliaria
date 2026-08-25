@@ -36,6 +36,7 @@ As migrations vivem em `docs/schemas/`:
 - `018_decisao_gestora_renovacao.sql` — registra no alerta a decisão de renovação ou encerramento tomada pela gestora.
 - `018_garantia_aluguel_antecipado.sql` — adiciona aluguel antecipado às modalidades de garantia. O número duplicado é histórico; ambos os arquivos `018` devem ser aplicados.
 - `019_normalizacao_telefone.sql` — normaliza telefones brasileiros na resolução, cria unicidade equivalente para contratos ativos/pendentes e preserva `resolver_contrato_por_telefone(text) -> uuid|null` para o papel `anon`.
+- `020_whatsapp_janela_atendimento.sql` — adiciona `agent_get_last_tenant_message_at()`, RPC de leitura da última mensagem recebida do inquilino, sem parâmetro de contrato e escopada por `agent_contract_id()`, usada pela política central de texto/template da WA-08.
 
 **Rodar sempre nessa ordem** (001 antes do 002, os dois arquivos 018 antes do 019 — várias migrations posteriores dependem de funções/colunas criadas nas anteriores) via **SQL Editor** do dashboard: cole o conteúdo do arquivo, clique em Run, confirme "Success" antes de rodar o próximo.
 
@@ -43,12 +44,12 @@ Nota histórica: a primeira versão do `002` criava `staff_users` sem habilitar 
 
 ## 3. Verificação pós-migration
 
-Checklist rápido depois de rodar todas as migrations até a 019:
+Checklist rápido depois de rodar todas as migrations até a 020:
 
 - **Table Editor**: as 9 tabelas presentes (8 de negócio + `staff_users`), todas com RLS habilitado. `contracts` já com a coluna `prazo_indeterminado` (Migration 013).
 - **Storage**: bucket `contracts` existe e está marcado como **Private**.
 - **Database → Roles**: papéis `agente_ia` e `cron_batch` presentes.
-- **Database → Functions**: `is_staff`, `agent_contract_id`, `set_updated_at`, as funções RPC de escrita do agente (`agent_update_charge_status`, `agent_open_maintenance_ticket`, `agent_create_escalation`, `agent_log_message`, `agent_registrar_alerta_renovacao`, `agent_registrar_calculo_reajuste`, `agent_aplicar_reajuste`, `agent_finalizar_contrato`), as de leitura em lote do `cron_batch` (`cron_listar_charges_ativas`, `cron_listar_contratos_ativos`, `cron_listar_clausulas_financeiras`, `cron_listar_reajustes_para_aplicar`), e `resolver_contrato_por_telefone` (papel `anon`) presentes.
+- **Database → Functions**: `is_staff`, `agent_contract_id`, `set_updated_at`, as funções RPC de escrita do agente (`agent_update_charge_status`, `agent_open_maintenance_ticket`, `agent_create_escalation`, `agent_log_message`, `agent_registrar_alerta_renovacao`, `agent_registrar_calculo_reajuste`, `agent_aplicar_reajuste`, `agent_finalizar_contrato`), a leitura escopada `agent_get_last_tenant_message_at`, as de leitura em lote do `cron_batch` (`cron_listar_charges_ativas`, `cron_listar_contratos_ativos`, `cron_listar_clausulas_financeiras`, `cron_listar_reajustes_para_aplicar`), e `resolver_contrato_por_telefone` (papel `anon`) presentes.
 - **Database → Indexes**: `contracts_telefone_normalizado_operacional_uidx` presente em `contracts`, cobrindo contratos ativos e pendentes.
 
 ## 4. Variáveis de ambiente (`.env`)

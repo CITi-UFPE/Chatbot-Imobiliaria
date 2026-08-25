@@ -5,21 +5,16 @@ Cobre quatro frentes:
 1. Round-trip dos IDs: todo `id` montado por `montar_button_id_*`
    (app/agents/a2_cobranca/button_ids.py) precisa ser reconhecido de volta
    por `decodificar_button_id`, com a mesma acao/contract_id/charge_ids.
-2. Payloads de notificação: `notificar_fernanda_comprovante`,
-   `notificar_fernanda_pagamento_combinado` e
-   `notificar_pergunta_qual_charge_paga` (app/agents/a2_cobranca/
-   notificacao.py) precisam chamar `whatsapp_client.enviar_botoes` com
-   títulos/ids dentro dos limites da Meta e ids que decodificam de volta
-   pra ação/contract_id/charge_id(s) corretos.
+2. Payloads dos templates: `notificar_fernanda_comprovante` e
+   `notificar_fernanda_pagamento_combinado` preservam IDs que decodificam
+   de volta para ação/contract_id/charge_id(s). O pagamento combinado novo
+   já traz as escolhas diretas de água e aluguel.
 3. Roteamento do clique: cada ação decodificável (confirmar, divergente,
    combinado_todos, escolher_parcial, combinado_parcial) precisa disparar
    o processamento certo em app/orchestrator/orchestrator.py; um id
    genuinamente não reconhecido não deve alterar nada.
-4. Fluxo completo do "Só uma delas" (pagamento combinado parcial), em duas
-   etapas: 1º clique só pergunta qual charge foi paga (não mexe em nada);
-   2º clique (um por charge) é que de fato confirma uma e reverte a(s)
-   outra(s) pra pendente — sem ambiguidade, porque o botão da 2ª etapa já
-   é específico de uma charge.
+4. Compatibilidade com o fluxo antigo de "Só uma delas": callbacks de
+   mensagens já enviadas continuam processáveis durante a transição.
 
 Nenhum destes testes acessa a Meta, o Supabase ou a Anthropic de verdade:
 `whatsapp_client.enviar_botoes`, `obter_client_agente` e
@@ -114,11 +109,11 @@ class TestPayloadNotificarFernandaComprovante:
     def test_botoes_confirmar_e_divergente_decodificaveis(self, monkeypatch):
         chamadas = []
 
-        def fake_enviar_botoes(telefone, corpo, botoes):
-            chamadas.append((telefone, corpo, botoes))
+        def fake_enviar_template(telefone, nome, parametros, lang="pt_BR", *, botoes=None):
+            chamadas.append((telefone, nome, parametros, botoes))
             return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.1")
 
-        monkeypatch.setattr(wc, "enviar_botoes", fake_enviar_botoes)
+        monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
 
         notif_a2.notificar_fernanda_comprovante(
             "+5581988880000",
@@ -132,23 +127,20 @@ class TestPayloadNotificarFernandaComprovante:
         )
 
         assert len(chamadas) == 1
-        _, _, botoes = chamadas[0]
+        _, nome, parametros, botoes = chamadas[0]
+        assert nome == "comprovante_para_conferencia"
+        assert parametros[-1] == "Única cobrança em aberto"
         assert len(botoes) == 2
 
-        for botao in botoes:
-            assert 1 <= len(botao["titulo"]) <= 20
-            assert 1 <= len(botao["id"]) <= 256
-
         confirmar, divergente = botoes
-        assert confirmar["titulo"] == "Confirmar"
-        assert divergente["titulo"] == "Valor diverge"
+        assert all(1 <= len(payload) <= 256 for payload in botoes)
 
-        decod_confirmar = button_ids.decodificar_button_id(confirmar["id"])
+        decod_confirmar = button_ids.decodificar_button_id(confirmar)
         assert decod_confirmar.acao == button_ids.ACAO_CONFIRMAR
         assert decod_confirmar.contract_id == CONTRACT_ID
         assert decod_confirmar.charge_ids == ["charge-1"]
 
-        decod_divergente = button_ids.decodificar_button_id(divergente["id"])
+        decod_divergente = button_ids.decodificar_button_id(divergente)
         assert decod_divergente.acao == button_ids.ACAO_DIVERGENTE
         assert decod_divergente.contract_id == CONTRACT_ID
         assert decod_divergente.charge_ids == ["charge-1"]
@@ -160,14 +152,15 @@ class TestPayloadNotificarFernandaPagamentoCombinado:
         {"id": "charge-agua", "tipo": "agua", "valor_esperado": 100.0},
     ]
 
-    def test_botoes_cobre_os_dois_e_so_uma_delas_decodificaveis(self, monkeypatch):
+    @pytest.mark.parametrize("inverter_ordem", [False, True])
+    def test_tres_botoes_diretos_em_ordem_deterministica(self, monkeypatch, inverter_ordem):
         chamadas = []
 
-        def fake_enviar_botoes(telefone, corpo, botoes):
-            chamadas.append((telefone, corpo, botoes))
+        def fake_enviar_template(telefone, nome, parametros, lang="pt_BR", *, botoes=None):
+            chamadas.append((telefone, nome, parametros, botoes))
             return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.2")
 
-        monkeypatch.setattr(wc, "enviar_botoes", fake_enviar_botoes)
+        monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
 
         notif_a2.notificar_fernanda_pagamento_combinado(
             "+5581988880000",
@@ -176,37 +169,92 @@ class TestPayloadNotificarFernandaPagamentoCombinado:
             "Apto 305",
             2300.0,
             "2026-07-17",
-            self.CHARGES,
+            list(reversed(self.CHARGES)) if inverter_ordem else self.CHARGES,
         )
 
         assert len(chamadas) == 1
-        _, corpo, botoes = chamadas[0]
+        _, nome, parametros, botoes = chamadas[0]
+        assert nome == "pagamento_combinado"
+        assert parametros[-1] == "- Aluguel: R$ 2.200,00\n- Água: R$ 100,00"
 
-        # Nunca mais de 3 botões (limite da Meta) — aqui, propositalmente, só 2.
-        assert len(botoes) <= 3
-        assert [b["titulo"] for b in botoes] == ["Cobre os dois", "Só uma delas"]
+        assert len(botoes) == 3
+        assert all(1 <= len(payload) <= 256 for payload in botoes)
 
-        for botao in botoes:
-            assert 1 <= len(botao["titulo"]) <= 20
-            assert 1 <= len(botao["id"]) <= 256
+        cobre_os_dois, agua_paga, aluguel_pago = botoes
 
-        cobre_os_dois, so_uma_delas = botoes
-
-        decod_todos = button_ids.decodificar_button_id(cobre_os_dois["id"])
+        decod_todos = button_ids.decodificar_button_id(cobre_os_dois)
         assert decod_todos.acao == button_ids.ACAO_COMBINADO_TODOS
         assert decod_todos.contract_id == CONTRACT_ID
         assert decod_todos.charge_ids == ["charge-aluguel", "charge-agua"]
 
-        decod_escolher = button_ids.decodificar_button_id(so_uma_delas["id"])
-        assert decod_escolher.acao == button_ids.ACAO_ESCOLHER_PARCIAL
-        assert decod_escolher.contract_id == CONTRACT_ID
-        assert decod_escolher.charge_ids == ["charge-aluguel", "charge-agua"]
+        decod_agua = button_ids.decodificar_button_id(agua_paga)
+        assert decod_agua.acao == button_ids.ACAO_COMBINADO_PARCIAL
+        assert decod_agua.contract_id == CONTRACT_ID
+        assert decod_agua.charge_ids == ["charge-agua", "charge-aluguel"]
 
-        # Sem "Valor diverge" nesta mensagem (ver notificacao.py) — o caso
-        # de valor que realmente não bate com nada continua manual.
-        titulos = [b["titulo"] for b in botoes]
-        assert "Valor diverge" not in titulos
-        assert "resolver manualmente" in corpo
+        decod_aluguel = button_ids.decodificar_button_id(aluguel_pago)
+        assert decod_aluguel.acao == button_ids.ACAO_COMBINADO_PARCIAL
+        assert decod_aluguel.contract_id == CONTRACT_ID
+        assert decod_aluguel.charge_ids == ["charge-aluguel", "charge-agua"]
+
+        assert all(
+            button_ids.decodificar_button_id(payload).acao
+            != button_ids.ACAO_DIVERGENTE
+            for payload in botoes
+        )
+
+
+class TestPayloadNotificarFernandaPagamentoCombinadoManual:
+    def test_template_sem_botoes_e_lista_deterministica(self, monkeypatch):
+        chamadas = []
+
+        def fake_enviar_template(telefone, nome, parametros, lang="pt_BR", *, botoes=None):
+            chamadas.append((telefone, nome, parametros, botoes))
+            return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.manual")
+
+        monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
+
+        notif_a2.notificar_fernanda_pagamento_combinado_manual(
+            "+5581988880000",
+            "João Pereira",
+            "Apto 305",
+            4400.0,
+            "2026-07-17",
+            [
+                {
+                    "id": "charge-aluguel-2",
+                    "tipo": "aluguel",
+                    "valor_esperado": 2200.0,
+                    "data_vencimento": "2026-08-10",
+                },
+                {
+                    "id": "charge-aluguel-1",
+                    "tipo": "aluguel",
+                    "valor_esperado": 2200.0,
+                    "data_vencimento": "2026-07-10",
+                },
+            ],
+        )
+
+        assert chamadas == [
+            (
+                "+5581988880000",
+                "pagamento_combinado_resolucao_manual",
+                [
+                    "João Pereira",
+                    "Apto 305",
+                    "R$ 4.400,00",
+                    "17/07/2026",
+                    (
+                        "- Aluguel | vencimento 10/07/2026 | R$ 2.200,00 | "
+                        "ID charge-aluguel-1\n"
+                        "- Aluguel | vencimento 10/08/2026 | R$ 2.200,00 | "
+                        "ID charge-aluguel-2"
+                    ),
+                ],
+                None,
+            )
+        ]
 
 
 class TestPayloadNotificarPerguntaQualChargePaga:
@@ -372,7 +420,7 @@ class TestRoteamentoClique:
 
 
 # ======================================================================
-# 4. Fluxo completo do "Só uma delas" em duas etapas
+# 4. Ações de pagamento combinado e compatibilidade com mensagens antigas
 # ======================================================================
 
 
@@ -415,9 +463,18 @@ class TestFluxoPagamentoCombinadoParcialDuasEtapas:
         assert contract_id == CONTRACT_ID
         assert {c["tipo"] for c in charges} == {"aluguel", "agua"}
 
-    def test_segunda_etapa_confirma_a_escolhida_e_reverte_as_demais(self, monkeypatch):
-        """marcar_apenas_uma_paga (chamada pelo 2º clique) é quem de fato
-        mexe no banco: confirma a paga, devolve as demais pra pendente."""
+    @pytest.mark.parametrize(
+        "charge_paga, charge_restante",
+        [
+            ("charge-agua", "charge-aluguel"),
+            ("charge-aluguel", "charge-agua"),
+        ],
+        ids=["agua_paga", "aluguel_pago"],
+    )
+    def test_acao_direta_confirma_a_escolhida_e_reverte_a_outra(
+        self, monkeypatch, charge_paga, charge_restante
+    ):
+        """Os botões diretos confirmam a indicada e devolvem a outra ao cron."""
         updates_de_status = []
 
         client_fake = MagicMock()
@@ -443,9 +500,57 @@ class TestFluxoPagamentoCombinadoParcialDuasEtapas:
         monkeypatch.setattr(comprovante, "obter_client_agente", lambda contract_id: client_fake)
         monkeypatch.setattr(comprovante, "responder_confirmacao_pagamento", lambda **kwargs: None)
 
-        comprovante.marcar_apenas_uma_paga(CONTRACT_ID, "charge-agua", ["charge-aluguel"])
+        comprovante.marcar_apenas_uma_paga(CONTRACT_ID, charge_paga, [charge_restante])
 
-        assert {"p_charge_id": "charge-agua", "p_status": "confirmado", "p_data_pagamento": "2026-07-17"} in updates_de_status
-        assert {"p_charge_id": "charge-aluguel", "p_status": "pendente"} in updates_de_status
+        assert {
+            "p_charge_id": charge_paga,
+            "p_status": "confirmado",
+            "p_data_pagamento": "2026-07-17",
+        } in updates_de_status
+        assert {"p_charge_id": charge_restante, "p_status": "pendente"} in updates_de_status
         # A charge paga nunca aparece revertida pra pendente também.
-        assert not any(u["p_charge_id"] == "charge-agua" and u["p_status"] == "pendente" for u in updates_de_status)
+        assert not any(
+            u["p_charge_id"] == charge_paga and u["p_status"] == "pendente"
+            for u in updates_de_status
+        )
+
+    def test_cobre_os_dois_confirma_as_duas_cobrancas(self, monkeypatch):
+        updates_de_status = []
+        client_fake = MagicMock()
+        client_fake.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value = MagicMock(
+            data={"data_identificada_comprovante": "2026-07-17"}
+        )
+
+        def _rpc(nome, params):
+            builder = MagicMock()
+            if nome == "agent_update_charge_status":
+                updates_de_status.append(params)
+                builder.execute.return_value = MagicMock(data=None)
+            elif nome == "buscar_dados_cobranca_contrato":
+                builder.execute.return_value = MagicMock(
+                    data={"telefone_whatsapp": "+5581999990000", "inquilino_nome": "João"}
+                )
+            else:
+                raise AssertionError(f"RPC inesperada: {nome}")
+            return builder
+
+        client_fake.rpc.side_effect = _rpc
+        monkeypatch.setattr(comprovante, "obter_client_agente", lambda contract_id: client_fake)
+        monkeypatch.setattr(comprovante, "responder_confirmacao_pagamento", lambda **kwargs: None)
+
+        comprovante.confirmar_pagamento_combinado(
+            CONTRACT_ID, ["charge-aluguel", "charge-agua"]
+        )
+
+        assert updates_de_status == [
+            {
+                "p_charge_id": "charge-aluguel",
+                "p_status": "confirmado",
+                "p_data_pagamento": "2026-07-17",
+            },
+            {
+                "p_charge_id": "charge-agua",
+                "p_status": "confirmado",
+                "p_data_pagamento": "2026-07-17",
+            },
+        ]

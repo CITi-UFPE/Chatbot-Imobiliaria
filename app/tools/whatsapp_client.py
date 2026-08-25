@@ -19,6 +19,7 @@ cliente em WA-05/WA-06/WA-09 — não são tocados por esta task.
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel
@@ -69,6 +70,15 @@ _MIME_PERMITIDOS_COMPROVANTE = frozenset(
     {"image/jpeg", "image/png", "image/webp", "application/pdf"}
 )
 _TAMANHO_MAXIMO_MIDIA_BYTES_PADRAO = 10 * 1024 * 1024  # 10 MB
+
+# Allowlist de host pra URL assinada de download de mídia (WA-03 Ponto 2 do
+# checkup do Daniel) — checar só o prefixo "https://" aceitaria qualquer
+# host HTTPS, inclusive um inesperado ou comprometido, antes de mandar o
+# access token no header do segundo GET. lookaside.fbsbx.com é o CDN da
+# própria Meta documentado para a Media Download API do WhatsApp Cloud API
+# (confirmado externamente — não inventado): a Graph API sempre devolve a
+# URL assinada de download nesse host.
+_HOSTS_MIDIA_PERMITIDOS = frozenset({"lookaside.fbsbx.com"})
 
 
 # ======================================================================
@@ -435,36 +445,92 @@ def enviar_texto(telefone: str, texto: str) -> ResultadoEnvio:
     return _enviar_mensagem(payload, telefone, operacao="enviar_texto")
 
 
+def _validar_botoes_template(botoes: list[str]) -> None:
+    """Valida payloads dos quick replies de um template.
+
+    Os títulos já pertencem ao template aprovado; no envio informamos apenas
+    os payloads dinâmicos, na mesma ordem dos botões cadastrados.
+    """
+    if len(botoes) > _MAX_BOTOES:
+        raise WhatsAppConteudoInvalidoError(
+            f"enviar_template aceita até {_MAX_BOTOES} botões, recebido {len(botoes)}."
+        )
+    for indice, payload in enumerate(botoes):
+        if not payload:
+            raise WhatsAppConteudoInvalidoError(
+                f"Botão de template {indice}: payload vazio."
+            )
+        if len(payload) > _MAX_ID_BOTAO_CARACTERES:
+            raise WhatsAppConteudoInvalidoError(
+                f"Botão de template {indice}: payload com {len(payload)} caracteres, "
+                f"máximo {_MAX_ID_BOTAO_CARACTERES}."
+            )
+
+
 def enviar_template(
-    telefone: str, nome: str, parametros: list[str], lang: str = "pt_BR"
+    telefone: str,
+    nome: str,
+    parametros: list[str],
+    lang: str = "pt_BR",
+    *,
+    botoes: Optional[list[str]] = None,
 ) -> ResultadoEnvio:
     """Envia uma mensagem de template pré-aprovado pela Meta — obrigatório
     fora da janela de 24h ou para mensagens proativas (cron de cobrança,
     alertas do A4). `parametros` é posicional, na MESMA ordem cadastrada no
     template junto à Meta (catálogo formal: WA-09) — viram o componente
-    `body` da mensagem, um por variável `{{n}}` do template.
+    `body` da mensagem, um por variável `{{n}}` do template. `botoes`
+    contém somente os payloads dinâmicos dos quick replies, na ordem dos
+    botões cadastrados no template; os títulos não são enviados aqui.
     """
+    payloads_botoes = botoes or []
+    _validar_botoes_template(payloads_botoes)
+
     if not envio_ativo():
-        _log_operacao("enviar_template", telefone, simulado=True, template=nome)
+        _log_operacao(
+            "enviar_template",
+            telefone,
+            simulado=True,
+            template=nome,
+            n_botoes=len(payloads_botoes),
+        )
         return ResultadoEnvio(sucesso=True, simulado=True)
 
     validar_configuracao_envio_real()
     destino = _normalizar_destino(telefone)
     template: dict = {"name": nome, "language": {"code": lang}}
+    componentes: list[dict] = []
     if parametros:
-        template["components"] = [
+        componentes.append(
             {
                 "type": "body",
                 "parameters": [{"type": "text", "text": parametro} for parametro in parametros],
             }
-        ]
+        )
+    componentes.extend(
+        {
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": str(indice),
+            "parameters": [{"type": "payload", "payload": payload}],
+        }
+        for indice, payload in enumerate(payloads_botoes)
+    )
+    if componentes:
+        template["components"] = componentes
     payload = {
         "messaging_product": "whatsapp",
         "to": destino,
         "type": "template",
         "template": template,
     }
-    return _enviar_mensagem(payload, telefone, operacao="enviar_template", template=nome)
+    return _enviar_mensagem(
+        payload,
+        telefone,
+        operacao="enviar_template",
+        template=nome,
+        n_botoes=len(payloads_botoes),
+    )
 
 
 def _validar_botoes(botoes: list[dict]) -> None:
@@ -590,6 +656,26 @@ def _baixar_arquivo_com_limite(url: str, headers: dict, limite_bytes: int) -> by
     return b"".join(pedacos)
 
 
+def _validar_url_midia(url_arquivo: str) -> None:
+    """Valida a URL assinada dos metadados de mídia ANTES do segundo GET
+    (que manda o access token no header) — nunca aceitar "qualquer coisa
+    HTTPS" às cegas. Recusa: protocolo diferente de https, host fora da
+    allowlist (`_HOSTS_MIDIA_PERMITIDOS`), credenciais embutidas
+    (usuário/senha na URL) e porta explícita (nunca necessária pra HTTPS
+    padrão). Nunca inclui a URL completa (contém hash/token de acesso
+    temporário) na exceção nem em log — só o media_id, que não é
+    sensível."""
+    partes = urlsplit(url_arquivo)
+    if partes.scheme != "https":
+        raise WhatsAppError("URL de mídia inesperada: protocolo não é https.")
+    if partes.username or partes.password:
+        raise WhatsAppError("URL de mídia inesperada: contém credenciais embutidas.")
+    if partes.port is not None:
+        raise WhatsAppError("URL de mídia inesperada: porta explícita não permitida.")
+    if partes.hostname not in _HOSTS_MIDIA_PERMITIDOS:
+        raise WhatsAppError("URL de mídia inesperada: host fora da allowlist da Meta.")
+
+
 def baixar_midia(media_id: str) -> ResultadoMidia:
     """Baixa um arquivo de mídia (comprovante) da Meta em duas etapas: (1)
     GET /{media_id} na Graph API para resolver a URL assinada/temporária do
@@ -628,11 +714,14 @@ def baixar_midia(media_id: str) -> ResultadoMidia:
     if not url_arquivo:
         raise WhatsAppError(f"Metadados de mídia sem URL assinada para media_id={media_id!r}.")
     # Defensivo: a URL vem de uma resposta autenticada da própria Meta, mas
-    # ainda assim recusamos qualquer coisa que não seja https antes de
-    # fazer um segundo GET nela — nunca aceitar "URL inesperada" às cegas
-    # (restrição explícita da WA-03).
-    if not url_arquivo.startswith("https://"):
-        raise WhatsAppError(f"URL de mídia inesperada (não-https) para media_id={media_id!r}.")
+    # ainda assim validamos protocolo + host (allowlist) + ausência de
+    # credenciais/porta embutidas antes de fazer um segundo GET nela —
+    # nunca aceitar "URL inesperada" às cegas (restrição explícita da
+    # WA-03; validação de host reforçada no checkup pós-WA-06/WA-08).
+    try:
+        _validar_url_midia(url_arquivo)
+    except WhatsAppError as erro:
+        raise WhatsAppError(f"{erro} (media_id={media_id!r})") from erro
     if mime_type not in _MIME_PERMITIDOS_COMPROVANTE:
         raise WhatsAppConteudoInvalidoError(f"MIME não permitido para comprovante: {mime_type!r}.")
     if tamanho_informado is not None:

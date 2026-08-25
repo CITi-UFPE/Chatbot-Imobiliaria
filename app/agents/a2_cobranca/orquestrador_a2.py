@@ -5,7 +5,8 @@ interação (reativa a mensagem/webhook) que pertença ao A2. O orquestrador
 geral não precisa conhecer os detalhes internos do A2 (que hoje tem 6
 tipos de entrada — ver TipoEntradaA2: comprovante por visão, confirmação
 por botão, divergência por botão, pagamento combinado confirmado, e o
-fluxo de "Só uma delas" em duas etapas — escolher_pagamento_parcial e
+pagamento combinado parcial direto e a compatibilidade com o antigo fluxo
+de "Só uma delas" — escolher_pagamento_parcial e
 pagamento_combinado_parcial, WA-06) — só precisa montar um `EntradaA2` com
 o `tipo_entrada` certo e chamar `processar_entrada_a2`.
 
@@ -84,8 +85,8 @@ class TipoEntradaA2(str, Enum):
     # (lista com todas as charges envolvidas no pagamento combinado).
     PAGAMENTO_COMBINADO_CONFIRMADO = "pagamento_combinado_confirmado"
 
-    # Fernanda apertou "Só uma delas" na DM de pagamento combinado — 1ª
-    # etapa de um fluxo de duas etapas (WA-06, ver
+    # Callback legado de "Só uma delas" — 1ª etapa do fluxo antigo
+    # de duas etapas (WA-06, ver
     # app/agents/a2_cobranca/button_ids.py): ainda não sabe qual charge foi
     # paga, só dispara a pergunta (um botão por charge) pra ela escolher.
     # NÃO altera nenhuma charge. Exige: contract_id, charge_ids,
@@ -93,8 +94,8 @@ class TipoEntradaA2(str, Enum):
     # de volta pra ela).
     ESCOLHER_PAGAMENTO_PARCIAL = "escolher_pagamento_parcial"
 
-    # Fernanda respondeu a pergunta da etapa anterior, clicando na charge
-    # específica que foi paga (ex: "Aluguel"). Exige: contract_id,
+    # Fernanda escolheu diretamente "Água paga"/"Aluguel pago", ou respondeu
+    # a pergunta legada, clicando na charge específica. Exige: contract_id,
     # charge_id_paga, charge_ids_restantes — ambos já vêm resolvidos do
     # próprio clique (ver button_ids.py::montar_button_id_combinado_parcial),
     # sem ambiguidade nenhuma.

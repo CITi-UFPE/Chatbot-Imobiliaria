@@ -138,6 +138,70 @@ def test_enviar_template_lang_customizado(monkeypatch):
     assert capturado["json"]["template"]["language"] == {"code": "en_US"}
 
 
+def test_enviar_template_com_quick_replies_mantem_ordem_e_payloads(monkeypatch):
+    capturado = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        capturado["json"] = _ler_json(request)
+        return httpx.Response(200, json={"messages": [{"id": "wamid.T4"}]})
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    wc.enviar_template(
+        "5581999998888",
+        "comprovante_para_conferencia",
+        ["João", "Apto 305"],
+        botoes=["confirmar|contract-1|charge-1", "divergente|contract-1|charge-1"],
+    )
+
+    componentes = capturado["json"]["template"]["components"]
+    assert componentes == [
+        {
+            "type": "body",
+            "parameters": [
+                {"type": "text", "text": "João"},
+                {"type": "text", "text": "Apto 305"},
+            ],
+        },
+        {
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": "0",
+            "parameters": [
+                {"type": "payload", "payload": "confirmar|contract-1|charge-1"}
+            ],
+        },
+        {
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": "1",
+            "parameters": [
+                {"type": "payload", "payload": "divergente|contract-1|charge-1"}
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "botoes",
+    [[""], ["1", "2", "3", "4"], ["x" * 257]],
+)
+def test_enviar_template_rejeita_payloads_de_botao_invalidos_antes_da_rede(
+    monkeypatch, botoes
+):
+    chamadas = []
+    monkeypatch.setattr(
+        wc,
+        "_construir_client",
+        lambda: chamadas.append(True),
+    )
+
+    with pytest.raises(wc.WhatsAppConteudoInvalidoError):
+        wc.enviar_template("5581999998888", "teste", [], botoes=botoes)
+
+    assert chamadas == []
+
+
 # ======================================================================
 # HTTP 400 — permanente, sem retry
 # ======================================================================

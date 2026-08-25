@@ -180,7 +180,7 @@ def test_baixar_midia_sucesso_duas_etapas(monkeypatch):
             return httpx.Response(
                 200,
                 json={
-                    "url": "https://mock-cdn.example.com/arquivo-real",
+                    "url": "https://lookaside.fbsbx.com/arquivo-real",
                     "mime_type": "image/jpeg",
                     "file_size": 4,
                 },
@@ -204,7 +204,7 @@ def test_baixar_midia_nao_e_afetado_pelo_kill_switch(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if "media-id" in str(request.url):
             return httpx.Response(
-                200, json={"url": "https://mock-cdn.example.com/f", "mime_type": "application/pdf"}
+                200, json={"url": "https://lookaside.fbsbx.com/f", "mime_type": "application/pdf"}
             )
         return httpx.Response(200, content=b"%PDF-1.4")
 
@@ -225,7 +225,7 @@ def test_baixar_midia_mime_nao_permitido_falha_antes_do_download(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if "media-id" in str(request.url):
             return httpx.Response(
-                200, json={"url": "https://mock-cdn.example.com/f", "mime_type": "application/zip"}
+                200, json={"url": "https://lookaside.fbsbx.com/f", "mime_type": "application/zip"}
             )
         chamadas["arquivo"] += 1
         return httpx.Response(200, content=b"PK...")
@@ -251,7 +251,7 @@ def test_baixar_midia_tamanho_informado_nos_metadados_acima_do_limite(monkeypatc
             return httpx.Response(
                 200,
                 json={
-                    "url": "https://mock-cdn.example.com/f",
+                    "url": "https://lookaside.fbsbx.com/f",
                     "mime_type": "image/png",
                     "file_size": 999999,
                 },
@@ -273,7 +273,7 @@ def test_baixar_midia_estoura_limite_durante_o_download_sem_file_size_confiavel(
         if "media-id" in str(request.url):
             # Sem file_size nos metadados — só o corte durante o streaming
             # protege aqui.
-            return httpx.Response(200, json={"url": "https://mock-cdn.example.com/f", "mime_type": "image/png"})
+            return httpx.Response(200, json={"url": "https://lookaside.fbsbx.com/f", "mime_type": "image/png"})
         return httpx.Response(200, content=b"x" * 5000)
 
     monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
@@ -327,6 +327,120 @@ def test_baixar_midia_url_nao_https_e_recusada(monkeypatch):
 
     with pytest.raises(wc.WhatsAppError, match="https"):
         wc.baixar_midia("media-id-http")
+
+
+# ======================================================================
+# baixar_midia — validação do host da URL assinada (checkup pós-WA-06/WA-08)
+# ======================================================================
+
+
+def test_baixar_midia_host_arbitrario_e_recusado_antes_do_segundo_get(monkeypatch):
+    chamadas = {"arquivo": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "media-id" in str(request.url):
+            return httpx.Response(
+                200,
+                json={"url": "https://dominio-inesperado.example/f", "mime_type": "image/png"},
+            )
+        chamadas["arquivo"] += 1
+        return httpx.Response(200, content=b"nao deveria chegar aqui")
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    with pytest.raises(wc.WhatsAppError, match="allowlist"):
+        wc.baixar_midia("media-id-host-estranho")
+    assert chamadas["arquivo"] == 0
+
+
+def test_baixar_midia_host_https_arbitrario_mas_similar_e_recusado(monkeypatch):
+    """Host parecido (subdomínio/typosquat) não deve passar por engano —
+    a comparação é de hostname exato contra a allowlist, não um 'contains'
+    ou sufixo solto."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"url": "https://lookaside.fbsbx.com.evil.example/f", "mime_type": "image/png"},
+        )
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    with pytest.raises(wc.WhatsAppError, match="allowlist"):
+        wc.baixar_midia("media-id-typosquat")
+
+
+def test_baixar_midia_url_com_credenciais_embutidas_e_recusada(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"url": "https://usuario:senha@lookaside.fbsbx.com/f", "mime_type": "image/png"},
+        )
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    with pytest.raises(wc.WhatsAppError, match="credenciais"):
+        wc.baixar_midia("media-id-com-credenciais")
+
+
+def test_baixar_midia_url_com_porta_explicita_e_recusada(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"url": "https://lookaside.fbsbx.com:8443/f", "mime_type": "image/png"}
+        )
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    with pytest.raises(wc.WhatsAppError, match="porta"):
+        wc.baixar_midia("media-id-com-porta")
+
+
+def test_baixar_midia_url_malformada_e_recusada(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"url": "não é uma url", "mime_type": "image/png"})
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    with pytest.raises(wc.WhatsAppError):
+        wc.baixar_midia("media-id-url-malformada")
+
+
+def test_baixar_midia_erro_de_host_recusado_nao_expoe_url_nem_token(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "url": "https://dominio-inesperado.example/f?hash=segredo-assinado-abc123",
+                "mime_type": "image/png",
+            },
+        )
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    with pytest.raises(wc.WhatsAppError) as excinfo:
+        wc.baixar_midia("media-id-nao-vazar")
+
+    mensagem = str(excinfo.value)
+    assert "segredo-assinado-abc123" not in mensagem
+    assert "dominio-inesperado.example" not in mensagem
+    assert "token-fake-de-teste" not in mensagem
+
+
+def test_baixar_midia_url_oficial_https_e_aceita(monkeypatch):
+    """Confirma que o host oficial (lookaside.fbsbx.com) continua sendo
+    aceito depois da allowlist — não é só uma bateria de rejeições."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "media-id" in str(request.url):
+            return httpx.Response(
+                200, json={"url": "https://lookaside.fbsbx.com/arquivo-oficial", "mime_type": "image/png"}
+            )
+        return httpx.Response(200, content=b"conteudo-real")
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    resultado = wc.baixar_midia("media-id-oficial")
+    assert resultado.conteudo == b"conteudo-real"
 
 
 def test_baixar_midia_media_id_vazio_falha_sem_http(monkeypatch):

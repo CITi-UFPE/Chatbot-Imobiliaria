@@ -37,7 +37,7 @@ from app.agents.a3_manutencao.fluxo import (
     processar_turno,
 )
 from app.agents.a5_escalonamento import AvaliacaoEscalonamento, executar_escalonamento
-from app.agents.a5_escalonamento.notificacao import notificar_staff
+from app.agents.a5_escalonamento.notificacao import notificar_staff_manutencao
 from app.orchestrator.agent_auth import assinar_token_agente, obter_client_agente
 from app.tools.supabase_client import construir_abrir_ticket_fn
 
@@ -135,7 +135,7 @@ def responder_manutencao(contract_id: str, mensagem_atual: str, historico_conver
     else:
         _salvar_estado(contract_id, resultado.estado)
 
-    if resultado.notificacao_gestora:
-        notificar_staff(resultado.notificacao_gestora)
+    if resultado.notificacao_gestora_parametros:
+        notificar_staff_manutencao(resultado.notificacao_gestora_parametros)
 
     return resultado.resposta_inquilino

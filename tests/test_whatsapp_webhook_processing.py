@@ -7,11 +7,14 @@ processamento também é enviada de volta pelo cliente WhatsApp real
 
 Nenhum teste aqui acessa Supabase, Anthropic ou a Meta de verdade: toda
 dependência externa (_resolver_contract_id, obter_client_agente,
-rotear_mensagem, rotear_comprovante_a2, rotear_clique_botao_a2, enviar_texto)
-é monkeypatchada no nível do módulo app.orchestrator.processar_mensagem
+rotear_mensagem, rotear_comprovante_a2, rotear_clique_botao_a2 e o despacho
+da política de saída) é monkeypatchada no nível do módulo
+app.orchestrator.processar_mensagem
 (importada por nome direto ali, então sobrescrever o atributo do módulo é
 suficiente para afetar as chamadas internas)."""
 
+import base64
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,12 +30,16 @@ class _FakeClientAgente:
 
     def __init__(self):
         self.chamadas: list[tuple[str, dict]] = []
+        self._ultimo_nome = ""
 
     def rpc(self, nome, params):
         self.chamadas.append((nome, params))
+        self._ultimo_nome = nome
         return self
 
     def execute(self):
+        if self._ultimo_nome == "agent_get_last_tenant_message_at":
+            return MagicMock(data=datetime.now(timezone.utc).isoformat())
         return MagicMock()
 
 
@@ -73,6 +80,17 @@ def _payload_clique(button_id: str = "confirmar|contract-1|charge-1", telefone: 
     return {"entry": [{"changes": [{"value": {"messages": [mensagem]}}]}]}
 
 
+def _capturar_envios(monkeypatch) -> list[tuple[str, str]]:
+    enviados: list[tuple[str, str]] = []
+
+    def _fake_enviar_saida(telefone, saida):
+        conteudo = saida.texto if saida.tipo == "texto" else saida.nome
+        enviados.append((telefone, conteudo))
+
+    monkeypatch.setattr(pm, "enviar_saida", _fake_enviar_saida)
+    return enviados
+
+
 # ======================================================================
 # Texto
 # ======================================================================
@@ -82,8 +100,7 @@ def test_mensagem_texto_real_envia_resposta_para_mesmo_from(monkeypatch, fake_cl
     telefone = "+5581999998888"
     monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
     monkeypatch.setattr(pm, "rotear_mensagem", lambda cid, texto: ("Resposta do agente", "a1"))
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     resposta = pm.processar_mensagem_recebida(_payload_texto(telefone=telefone), responder_via_whatsapp=True)
 
@@ -94,8 +111,7 @@ def test_mensagem_texto_real_envia_resposta_para_mesmo_from(monkeypatch, fake_cl
 def test_mensagem_simulada_nao_chama_cliente_whatsapp(monkeypatch, fake_client):
     monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
     monkeypatch.setattr(pm, "rotear_mensagem", lambda cid, texto: ("Resposta do agente", "a1"))
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     resposta = pm.processar_mensagem_recebida(_payload_texto())  # responder_via_whatsapp padrão: False
 
@@ -106,15 +122,14 @@ def test_mensagem_simulada_nao_chama_cliente_whatsapp(monkeypatch, fake_client):
 def test_contrato_nao_encontrado_envia_mensagem_segura(monkeypatch):
     telefone = "+5581999990000"
     monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: None)
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     resposta = pm.processar_mensagem_recebida(_payload_texto(telefone=telefone), responder_via_whatsapp=True)
 
     assert resposta is not None
     assert "Nenhum contrato ativo encontrado" in resposta
     assert "contract-1" not in resposta  # não revela detalhes internos
-    assert enviados == [(telefone, resposta)]
+    assert enviados == [(telefone, "retomada_atendimento")]
 
 
 class _ClientFalhaNoLogDoAgente:
@@ -128,13 +143,17 @@ class _ClientFalhaNoLogDoAgente:
         self._falhar_sempre = falhar_sempre
         self._tentativas_de_agente = 0
         self._ultimo_params: dict = {}
+        self._ultimo_nome = ""
 
     def rpc(self, nome, params):
         self.chamadas.append(params)
         self._ultimo_params = params
+        self._ultimo_nome = nome
         return self
 
     def execute(self):
+        if self._ultimo_nome == "agent_get_last_tenant_message_at":
+            return MagicMock(data=datetime.now(timezone.utc).isoformat())
         if self._ultimo_params.get("p_remetente") == "agente":
             self._tentativas_de_agente += 1
             if self._falhar_sempre or self._tentativas_de_agente == 1:
@@ -151,8 +170,7 @@ def test_falha_ao_registrar_resposta_do_agente_nao_descarta_resposta_valida(monk
     monkeypatch.setattr(pm, "obter_client_agente", lambda contract_id: client)
     monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
     monkeypatch.setattr(pm, "rotear_mensagem", lambda cid, texto: ("Resposta do agente", "a1"))
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     resposta = pm.processar_mensagem_recebida(_payload_texto(telefone=telefone), responder_via_whatsapp=True)
 
@@ -170,8 +188,7 @@ def test_falha_transitoria_no_log_e_recuperada_pelo_retry(monkeypatch):
     monkeypatch.setattr(pm, "obter_client_agente", lambda contract_id: client)
     monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
     monkeypatch.setattr(pm, "rotear_mensagem", lambda cid, texto: ("Resposta do agente", "a1"))
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     resposta = pm.processar_mensagem_recebida(_payload_texto(telefone=telefone), responder_via_whatsapp=True)
 
@@ -188,14 +205,18 @@ def test_falha_do_cliente_whatsapp_nao_apaga_logs_nem_efeitos(monkeypatch, fake_
     def _falha_transporte(tel, msg):
         raise RuntimeError("falha de transporte simulada")
 
-    monkeypatch.setattr(pm, "enviar_texto", _falha_transporte)
+    monkeypatch.setattr(pm, "enviar_saida", _falha_transporte)
 
     resposta = pm.processar_mensagem_recebida(_payload_texto(telefone=telefone), responder_via_whatsapp=True)
 
     # A falha de envio não deve subir nem apagar o que o agente já fez.
     assert resposta == "Resposta do agente"
     nomes_chamados = [nome for nome, _ in fake_client.chamadas]
-    assert nomes_chamados == ["agent_log_message", "agent_log_message"]
+    assert nomes_chamados == [
+        "agent_log_message",
+        "agent_log_message",
+        "agent_get_last_tenant_message_at",
+    ]
 
 
 # ======================================================================
@@ -209,13 +230,127 @@ def test_midia_real_envia_resposta_para_mesmo_from(monkeypatch, fake_client):
     monkeypatch.setattr(
         pm, "rotear_comprovante_a2", lambda cid, b64, mime: ("Comprovante recebido, obrigado.", "a2")
     )
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     resposta = pm.processar_mensagem_recebida(_payload_midia(telefone=telefone), responder_via_whatsapp=True)
 
     assert resposta == "Comprovante recebido, obrigado."
     assert enviados == [(telefone, resposta)]
+
+
+def _payload_midia_real(
+    telefone: str = "+5581999998888", media_id: str = "wamid-media-1", mime: str = "image/jpeg"
+) -> dict:
+    """Payload real da Meta — sem _dados_base64 (isso só existe no payload
+    simulado do dev_chat), só o media_id que exige baixar_midia de verdade
+    (ver app/tools/whatsapp_client.py, WA-03)."""
+    mensagem = {
+        "id": "wamid.midia2",
+        "from": telefone,
+        "type": "image",
+        "image": {"mime_type": mime, "id": media_id},
+    }
+    return {"entry": [{"changes": [{"value": {"messages": [mensagem]}}]}]}
+
+
+class _ResultadoMidiaFake:
+    def __init__(self, conteudo: bytes, mime_type: str):
+        self.conteudo = conteudo
+        self.mime_type = mime_type
+
+
+def test_midia_real_sem_dados_base64_baixa_via_whatsapp_client_e_usa_mime_do_client(
+    monkeypatch, fake_client
+):
+    """Checkup do Daniel, Ponto 1: payload real (sem _dados_base64) precisa
+    chamar whatsapp_client.baixar_midia de verdade, converter os bytes pra
+    base64 corretamente, e usar o mime_type DEVOLVIDO PELO CLIENTE (que pode
+    divergir do mime_type do payload inicial do webhook) — não o do payload
+    inicial."""
+    telefone = "+5581999998888"
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
+
+    chamadas_baixar = []
+
+    def _fake_baixar_midia(media_id):
+        chamadas_baixar.append(media_id)
+        return _ResultadoMidiaFake(b"conteudo-real-do-comprovante", "application/pdf")
+
+    monkeypatch.setattr(pm, "baixar_midia", _fake_baixar_midia)
+
+    chamadas_rotear = []
+
+    def _fake_rotear(cid, b64, mime):
+        chamadas_rotear.append((cid, b64, mime))
+        return ("Comprovante recebido, obrigado.", "a2")
+
+    monkeypatch.setattr(pm, "rotear_comprovante_a2", _fake_rotear)
+    enviados = _capturar_envios(monkeypatch)
+
+    resposta = pm.processar_mensagem_recebida(
+        _payload_midia_real(telefone=telefone, media_id="wamid-media-1", mime="image/jpeg"),
+        responder_via_whatsapp=True,
+    )
+
+    assert resposta == "Comprovante recebido, obrigado."
+    assert chamadas_baixar == ["wamid-media-1"]
+    assert chamadas_rotear == [
+        (
+            "contract-1",
+            base64.b64encode(b"conteudo-real-do-comprovante").decode("ascii"),
+            "application/pdf",  # mime do CLIENTE, não "image/jpeg" do payload inicial
+        )
+    ]
+    assert enviados == [(telefone, resposta)]
+
+
+def test_midia_real_falha_no_download_produz_fallback_controlado(monkeypatch, fake_client):
+    """Erro de download (rede, host recusado, MIME inválido, etc.) nunca
+    deve propagar pro webhook nem chegar a chamar o A2 — cai no fallback já
+    existente, pedindo análise manual."""
+    telefone = "+5581999998888"
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
+
+    def _fake_baixar_midia_com_falha(media_id):
+        raise RuntimeError("Meta fora do ar")
+
+    monkeypatch.setattr(pm, "baixar_midia", _fake_baixar_midia_com_falha)
+
+    chamadas_rotear = []
+    monkeypatch.setattr(
+        pm, "rotear_comprovante_a2", lambda cid, b64, mime: chamadas_rotear.append((cid, b64, mime))
+    )
+    enviados = _capturar_envios(monkeypatch)
+
+    resposta = pm.processar_mensagem_recebida(
+        _payload_midia_real(telefone=telefone), responder_via_whatsapp=True
+    )
+
+    assert "não conseguimos baixá-lo" in resposta
+    assert chamadas_rotear == []  # nunca chegou a chamar o A2
+    # client_agente ainda não foi obtido nesse ramo de falha precoce (mesmo
+    # padrão de test_contrato_nao_encontrado_envia_mensagem_segura) — a
+    # política de saída, sem cliente pra checar a janela de 24h, cai no
+    # template seguro em vez do texto livre.
+    assert enviados == [(telefone, "retomada_atendimento")]
+
+
+def test_midia_simulada_com_dados_base64_nao_chama_baixar_midia(monkeypatch, fake_client):
+    """Regressão: o caminho simulado (_dados_base64, usado pelo dev_chat)
+    continua funcionando sem passar pelo download real."""
+    telefone = "+5581999998888"
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
+
+    chamadas_baixar = []
+    monkeypatch.setattr(pm, "baixar_midia", lambda media_id: chamadas_baixar.append(media_id))
+    monkeypatch.setattr(
+        pm, "rotear_comprovante_a2", lambda cid, b64, mime: ("Comprovante recebido, obrigado.", "a2")
+    )
+    _capturar_envios(monkeypatch)
+
+    pm.processar_mensagem_recebida(_payload_midia(telefone=telefone), responder_via_whatsapp=True)
+
+    assert chamadas_baixar == []
 
 
 # ======================================================================
@@ -224,8 +359,7 @@ def test_midia_real_envia_resposta_para_mesmo_from(monkeypatch, fake_client):
 
 
 def test_evento_de_status_nao_envia_nada(monkeypatch):
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     resposta = pm.processar_mensagem_recebida(_payload_status(), responder_via_whatsapp=True)
 
@@ -246,8 +380,7 @@ def test_clique_interativo_nao_envia_resposta_automatica(monkeypatch):
         return "Confirmado, obrigado."
 
     monkeypatch.setattr(pm, "rotear_clique_botao_a2", fake_rotear)
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     resposta = pm.processar_mensagem_recebida(_payload_clique(), responder_via_whatsapp=True)
 
@@ -266,8 +399,7 @@ def test_clique_interativo_nao_envia_resposta_automatica(monkeypatch):
 def test_dev_chat_regressao_nao_chama_whatsapp(monkeypatch, fake_client):
     monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
     monkeypatch.setattr(pm, "rotear_mensagem", lambda cid, texto: ("Resposta simulada", "a1"))
-    enviados = []
-    monkeypatch.setattr(pm, "enviar_texto", lambda tel, msg: enviados.append((tel, msg)))
+    enviados = _capturar_envios(monkeypatch)
 
     msg = dev_chat.MensagemSimulada(telefone="+5581999998888", texto="Oi")
     resultado = dev_chat.enviar_mensagem_simulada(msg)
