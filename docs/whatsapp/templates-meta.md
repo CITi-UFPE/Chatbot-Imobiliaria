@@ -1,5 +1,9 @@
 # Catálogo de templates — WhatsApp Business (Meta Cloud API)
 
+> Para o cadastro no WhatsApp Manager, use o guia operacional
+> `docs/whatsapp/templates-meta-para-validacao.md`. Este arquivo permanece
+> como catálogo técnico e histórico das decisões de implementação.
+
 WA-09 — Projeto Domingos Monteiro.
 
 **Status: nenhum destes templates foi submetido ou aprovado pela Meta.** Este
@@ -27,6 +31,9 @@ todos: sem emojis, sem linguagem de venda, sem urgência artificial.
   valor de exemplo plausível no momento da submissão.
 - **Consumidor**: arquivo/função no backend responsável por montar os
   parâmetros e chamar `enviar_template`.
+- **Bordas do corpo**: nenhum corpo pode começar ou terminar com uma
+  variável. Sempre deve existir texto fixo antes da primeira variável e
+  depois da última, conforme a validação do WhatsApp Manager.
 
 ---
 
@@ -89,7 +96,7 @@ livre validado com o cliente. Transporte integrado pela WA-08/WA-05.
 
 **Corpo sugerido:**
 ```
-{{1}}, o débito de {{2}} (vencimento {{3}}) segue em aberto há {{4}} dias, sem que tenhamos recebido comprovante de pagamento. Valor atualizado: R$ {{5}}. Pedimos a regularização o quanto antes — a partir de agora, o caso também é acompanhado diretamente pela gestão do imóvel.
+Olá, {{1}}. O débito de {{2}} (vencimento {{3}}) segue em aberto há {{4}} dias, sem que tenhamos recebido comprovante de pagamento. Valor atualizado: R$ {{5}}. Pedimos a regularização o quanto antes — a partir de agora, o caso também é acompanhado diretamente pela gestão do imóvel.
 ```
 
 **Variáveis:**
@@ -124,6 +131,8 @@ Valor identificado: {{3}}
 Data identificada: {{4}}
 Valor esperado (contrato): R$ {{5}}
 Critério da correspondência: {{6}}
+
+Aguardando sua conferência.
 ```
 
 **Botões (quick reply):** "Confirmar" / "Valor diverge" — payload
@@ -135,7 +144,7 @@ o clique ser reconhecido por `decodificar_button_id` no webhook.
 1. Nome do inquilino
 2. Identificação do imóvel
 3. Valor identificado no comprovante (ou "não legível")
-4. Data identificada no comprovante (ou "não legível")
+4. Data identificada no comprovante em ISO `aaaa-mm-dd` (ou "não legível")
 5. Valor esperado, conforme o contrato
 6. Critério determinístico: `Única cobrança em aberto` ou
    `Correspondência identificada automaticamente pelo valor`
@@ -165,6 +174,8 @@ Data identificada: {{4}}
 
 Charges em aberto que juntas somam esse valor (R$ {{5}}):
 {{6}}
+
+Revise as cobranças e selecione uma opção abaixo.
 ```
 
 **Botões (quick reply), nesta ordem:** "Cobre os dois" / "Água paga" /
@@ -181,7 +192,7 @@ cobranças usam `pagamento_combinado_resolucao_manual`, sem botões.
 1. Nome do inquilino
 2. Identificação do imóvel
 3. Valor identificado no comprovante
-4. Data identificada no comprovante
+4. Data identificada no comprovante em ISO `aaaa-mm-dd`
 5. Soma das charges em aberto que batem com o valor
 6. Lista das charges em aberto (uma por linha, ex: "- Aluguel: R$ 1.200,00")
 
@@ -203,6 +214,8 @@ união da WA-06 com a WA-08.
 Alerta de gestão contratual — {{1}}
 
 {{2}}
+
+Revise as informações e prossiga com a ação necessária.
 ```
 
 **Variáveis:**
@@ -245,6 +258,8 @@ inquilino, datas, valores) — ver `montar_alerta_renovacao`/
 Novo caso escalado — protocolo {{1}}
 Motivo: {{2}}
 {{3}}
+
+O caso aguarda acompanhamento da equipe.
 ```
 
 **Variáveis:**
@@ -274,6 +289,8 @@ Imóvel: {{2}}
 Categoria: {{3}}
 Urgência: {{4}}
 Descrição do inquilino: {{5}}
+
+O chamado aguarda acompanhamento da equipe.
 ```
 
 **Variáveis:**
@@ -380,7 +397,7 @@ Comprovante recebido — não foi possível identificar automaticamente a que se
 
 Inquilino: {{1}}
 Imóvel: {{2}}
-Valor identificado: R$ {{3}}
+Valor identificado: {{3}}
 Data identificada: {{4}}
 
 Charges em aberto no contrato:
@@ -392,8 +409,8 @@ O valor não bate com nenhuma delas nem com a soma — resolver manualmente.
 **Variáveis:**
 1. Nome do inquilino.
 2. Identificação do imóvel.
-3. Valor identificado ou `não legível`.
-4. Data identificada ou `não legível`.
+3. Valor identificado já formatado com `R$`, ou `não legível`.
+4. Data identificada em ISO `aaaa-mm-dd`, ou `não legível`.
 5. Lista determinística das charges em aberto.
 
 **Consumidor:**

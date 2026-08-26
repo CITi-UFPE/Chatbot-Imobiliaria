@@ -34,9 +34,9 @@ def test_montar_alerta_renovacao_reproduz_template():
     )
 
     assert mensagem == (
-        "@Domingos Monteiro @Fernanda Monteiro, o contrato do Apto 302, Ed. X (João Silva) completa "
-        "12 meses no dia 13/09/2026, daqui a 60 dias.\n\n"
-        "Será necessário tomar a decisão quanto à renovação, renegociação ou encerramento do contrato."
+        "O contrato do Apto 302, Ed. X, vinculado a João Silva, completa "
+        "12 meses em 13/09/2026. Faltam 60 dias para o término.\n\n"
+        "Definição necessária: renovação, renegociação ou encerramento."
     )
 
 
@@ -53,12 +53,13 @@ def test_montar_calculo_reajuste_reproduz_template():
     )
 
     assert mensagem == (
-        "@Domingos Monteiro @Fernanda Monteiro, segue o cálculo de reajuste do contrato do Apto 302, "
-        "Ed. X (João Silva), com data de aniversário em 14/08/2026.\n\n"
+        "Contrato: Apto 302, Ed. X\n"
+        "Inquilino: João Silva\n"
+        "Data de aniversário: 14/08/2026\n\n"
         "Índice aplicável (conforme cláusula 5.2): IGPM\n"
         "Valor atual do aluguel: R$ 1.500,00\n"
         "Percentual de reajuste: 3,18%\n"
-        "Novo valor sugerido: R$ 1.547,70"
+        "Valor calculado após o reajuste: R$ 1.547,70"
     )
 
 

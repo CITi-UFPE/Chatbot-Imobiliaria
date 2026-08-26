@@ -3,11 +3,6 @@ from typing import Optional
 
 from app.models.contract_alerts import IndiceReajuste
 
-# Nomes fixos: Domingos e Fernanda Monteiro são os únicos gestores do
-# portfólio (ver docs/schemas/002_auth_rbac_rls.sql, staff_users) — não há,
-# hoje, uma lista de gestores por imóvel para mencionar dinamicamente.
-GESTORES_MENCAO = "@Domingos Monteiro @Fernanda Monteiro"
-
 _NOME_INDICE = {"igpm": "IGPM", "ipca": "IPCA"}
 
 
@@ -31,9 +26,10 @@ def montar_alerta_renovacao(
     data_aniversario_contrato: date,
 ) -> str:
     return (
-        f"{GESTORES_MENCAO}, o contrato do {identificacao_imovel} ({nome_inquilino}) completa "
-        f"{periodo_contrato} no dia {formatar_data_br(data_aniversario_contrato)}, daqui a 60 dias.\n\n"
-        "Será necessário tomar a decisão quanto à renovação, renegociação ou encerramento do contrato."
+        f"O contrato do {identificacao_imovel}, vinculado a {nome_inquilino}, completa "
+        f"{periodo_contrato} em {formatar_data_br(data_aniversario_contrato)}. "
+        "Faltam 60 dias para o término.\n\n"
+        "Definição necessária: renovação, renegociação ou encerramento."
     )
 
 
@@ -60,10 +56,11 @@ def montar_calculo_reajuste(
     clausula_texto = numero_clausula_reajuste if numero_clausula_reajuste else "não identificada"
 
     return (
-        f"{GESTORES_MENCAO}, segue o cálculo de reajuste do contrato do {identificacao_imovel} "
-        f"({nome_inquilino}), com data de aniversário em {formatar_data_br(data_aniversario_contrato)}.\n\n"
+        f"Contrato: {identificacao_imovel}\n"
+        f"Inquilino: {nome_inquilino}\n"
+        f"Data de aniversário: {formatar_data_br(data_aniversario_contrato)}\n\n"
         f"Índice aplicável (conforme cláusula {clausula_texto}): {_NOME_INDICE[indice_reajuste]}\n"
         f"Valor atual do aluguel: R$ {formatar_moeda_brl(valor_atual)}\n"
         f"Percentual de reajuste: {formatar_percentual_br(percentual_reajuste)}%\n"
-        f"Novo valor sugerido: R$ {formatar_moeda_brl(valor_reajustado)}"
+        f"Valor calculado após o reajuste: R$ {formatar_moeda_brl(valor_reajustado)}"
     )

@@ -41,8 +41,8 @@ WA-09: alerta de renovação (Fluxo A) e cálculo de reajuste (Fluxo B) agora
 também são TRANSPORTADOS por WhatsApp — não só registrados no banco e
 devolvidos no resultado estruturado. IMPORTANTE: o texto de
 montar_alerta_renovacao/montar_calculo_reajuste (mensagens_gestao_contratual.py)
-é dirigido À EQUIPE (menciona @Domingos/@Fernanda pelo nome, pede pra ELES
-decidirem sobre renovação/reajuste) — não é uma mensagem pro inquilino, e
+é dirigido À EQUIPE (apresenta os dados para decisão sobre renovação/reajuste)
+— não é uma mensagem pro inquilino, e
 NÃO deve ir pro telefone_whatsapp do contrato. O transporte vai pro
 WHATSAPP_STAFF_PHONE_NUMBER (novo, .env.example), via template
 `alerta_contratual` (catálogo: docs/whatsapp/templates-meta.md). Ver
