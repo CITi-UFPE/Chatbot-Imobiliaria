@@ -17,6 +17,7 @@ scripts/rodar_a4_gestao_contratual.py. Este aqui cobre os dois agentes com
 a mesma interface simples, útil pra bater rapidinho as duas datas seguidas.
 """
 
+import logging
 import sys
 from datetime import date
 
@@ -24,8 +25,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Sem isto, os logs de app/tools/whatsapp_client.py (_log_operacao — INFO,
+# "operacao=enviar_template ... simulado=True template=...") nunca aparecem
+# no terminal: o root logger nasce em WARNING. É esse log que mostra qual
+# enviar_template seria chamado em cada estágio (HML-02, cenário 6 da matriz
+# de docs/whatsapp/homologacao-staging.md) — sem isso configurado, o script
+# roda e escreve no banco normalmente, mas fica "mudo" sobre o que teria sido
+# enviado.
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
 
 def main() -> None:
+    # Console do Windows (cp1252 por padrão) quebra a acentuação dos logs
+    # abaixo sem isto — mesmo ajuste já usado em scripts/chat_a3_manutencao.py
+    # e scripts/rodar_a4_gestao_contratual.py.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     if len(sys.argv) != 3 or sys.argv[1] not in ("a2", "a4"):
         print("Uso: python -m scripts.testar_cron_com_data [a2|a4] AAAA-MM-DD")
         sys.exit(1)
