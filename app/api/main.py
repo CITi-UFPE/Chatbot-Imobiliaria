@@ -1,9 +1,22 @@
+import logging
 import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers import charges, contracts, whatsapp
+
+# Sem isto, o root logger nasce em WARNING e os logs estruturados de
+# app/tools/whatsapp_client.py (_log_operacao — "operacao=enviar_texto
+# telefone=*** simulado=True/False ...") nunca aparecem nos logs do
+# processo (Railway, ou o terminal local), mesmo com a mensagem sendo
+# processada com sucesso. É esse log que confirma, na homologação (WA-10,
+# docs/whatsapp/homologacao-staging.md, seção 8), que o kill switch
+# (WHATSAPP_ENVIO_ATIVO) realmente tomou efeito depois de ligado — sem
+# ele, só dá pra confirmar de forma indireta (mensagem chegou ou não no
+# celular). Mesmo ajuste já usado em app/jobs/cron_cobranca_diaria.py e
+# app/jobs/cron_alertas_contratuais.py, faltava só aqui na API.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 app = FastAPI(title="Projeto Domingos Monteiro — API")
 
