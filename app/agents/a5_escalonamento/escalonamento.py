@@ -137,7 +137,15 @@ def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) 
     equipe (rede instável, WHATSAPP_STAFF_PHONE_NUMBER ausente etc.) por
     isso não pode derrubar o retorno do protocolo nem a resposta que o
     chamador devolve ao inquilino (avaliacao.resposta_para_inquilino) — a
-    falha é logada, não engolida, mas não propaga daqui."""
+    falha é logada, não engolida, mas não propaga daqui.
+
+    Migration 022: quando a notificação sai de fato (envio real ativo), o
+    wamid devolvido pela Meta é gravado na escalação — é o que permite
+    depois correlacionar um reply nativo da Fernanda com este caso
+    específico (ver resposta_gestora.py). Falha só nesse registro (não na
+    notificação em si) segue a mesma regra: logada, não propagada — sem
+    o wamid salvo, a Fernanda só perde a correlação automática, o caso
+    continua escalado e visível pelos meios de sempre."""
     client = obter_client_agente(contract_id)
     resposta = client.rpc(
         "agent_create_escalation",
@@ -146,7 +154,7 @@ def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) 
     protocolo = resposta.data
 
     try:
-        notificar_staff_escalonamento(str(protocolo), avaliacao.motivo, avaliacao.descricao)
+        wamid = notificar_staff_escalonamento(str(protocolo), avaliacao.motivo, avaliacao.descricao)
     except Exception:
         logger.exception(
             "Falha ao notificar a equipe sobre o escalonamento %s (contrato %s) — "
@@ -154,6 +162,22 @@ def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) 
             protocolo,
             contract_id,
         )
+        wamid = None
+
+    if wamid is not None:
+        try:
+            client.rpc(
+                "agent_registrar_wamid_escalonamento",
+                {"p_protocolo": str(protocolo), "p_wamid": wamid},
+            ).execute()
+        except Exception:
+            logger.exception(
+                "Falha ao gravar o wamid da notificação para o escalonamento %s (contrato %s) — "
+                "a resposta da Fernanda pra este caso não poderá ser correlacionada "
+                "automaticamente depois.",
+                protocolo,
+                contract_id,
+            )
 
     return protocolo
 
