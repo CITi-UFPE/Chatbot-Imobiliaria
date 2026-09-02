@@ -1,14 +1,11 @@
 /* GestãoImob v2 — reformulação visual (Lora + Geist). Ver
    "GestãoImob Design System" (Claude Design) para o restante dos tokens
-   (spacing/shadow já embutidos abaixo). Import remoto — não precisa de
-   arquivo de fonte local.
-   PRECISA ficar como a primeira linha do arquivo: o Lightning CSS (usado
-   pelo Vite) exige que @import venha antes de qualquer outra regra — e o
-   `@import "tailwindcss"` logo abaixo se expande em um monte de CSS nesse
-   mesmo ponto, então um @import de fonte depois dele conta como "depois
-   de outras regras" e quebra o build. */
-@import url("https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,500;0,600;1,500;1,600&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
-
+   (spacing/shadow já embutidos abaixo).
+   O @import de fonte remoto que ficava aqui foi movido pra um <link> em
+   src/routes/__root.tsx (head().links) — o Lightning CSS (usado pelo
+   Vite 8/Rolldown neste projeto) estava tentando resolver a URL do Google
+   Fonts como se fosse um arquivo local (ENOENT no build), então carregar
+   a fonte fora do CSS evita esse bug do bundler por completo. */
 @import "tailwindcss" source(none);
 @source "../src";
 @import "tw-animate-css";
