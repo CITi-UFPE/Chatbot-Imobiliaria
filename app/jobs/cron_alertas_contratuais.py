@@ -7,13 +7,21 @@ aceita só um horário de disparo). Reaproveita a mesma função de negócio já
 usada pelo agente A4 — sem duplicar lógica de reajuste/renovação aqui nem em
 SQL.
 
-Estado atual: app/agents/a4_gestao_contratual/ ainda não tem nenhuma função
-de negócio implementada (só o pacote vazio). Este script já está pronto pra
-rodar assim que ela existir — só falta o import abaixo parar de falhar.
+A4 já está implementado (app/agents/a4_gestao_contratual/fluxo.py) — o
+try/except de ImportError abaixo é só defesa histórica, não reflete mais o
+estado atual.
+
+Loga o resumo do resultado (e cada erro capturado, contrato por contrato,
+via a mesma isolação de falha de executar_alertas_contratuais) porque o
+Railway Cron não expõe valor de retorno nenhum: sem logar aqui, um erro
+isolado por contrato (ex: falha ao enviar WhatsApp) processa silenciosamente
+e o job "termina bem" (exit 0) sem ninguém saber que algo não foi
+transportado.
 """
 
 import logging
 import sys
+from datetime import date
 
 from dotenv import load_dotenv
 
@@ -34,7 +42,23 @@ def main() -> int:
         )
         return 1
 
-    executar_alertas_contratuais()
+    hoje = date.today()
+    resultado = executar_alertas_contratuais()
+    logger.info(
+        "Cron de alertas contratuais: %d alerta(s) de renovacao, %d calculo(s) de "
+        "reajuste, %d reajuste(s) aplicado(s), %d contrato(s) finalizado(s)/em "
+        "pendencia de renovacao, %d erro(s) em %s.",
+        len(resultado.alertas_renovacao),
+        len(resultado.calculos_reajuste),
+        len(resultado.reajustes_aplicados),
+        len(resultado.contratos_finalizados)
+        + len(resultado.contratos_pendentes_renovacao)
+        + len(resultado.contratos_transicionados_indeterminado),
+        len(resultado.erros),
+        hoje,
+    )
+    for erro in resultado.erros:
+        logger.error("Cron de alertas contratuais — erro: %s", erro)
     return 0
 
 
