@@ -18,9 +18,18 @@ switch desligado (padrão), a notificação fica em modo simulado sem exigir
 nenhuma variável de WhatsApp configurada — mesmo comportamento de
 _notificar_staff_alerta_contratual, coberto pelos testes equivalentes em
 tests/test_a4_whatsapp_notification.py.
+
+Resposta da gestora (Migration 022): as três funções abaixo agora devolvem
+o `message_id` (wamid) que a Meta atribuiu ao envio — `None` em modo
+simulado, quando não há chamada HTTP nenhuma. `executar_escalonamento`
+(escalonamento.py) usa esse wamid para gravar a correlação
+(agent_registrar_wamid_escalonamento) que depois permite identificar a
+qual escalação um reply nativo da Fernanda se refere — ver
+resposta_gestora.py.
 """
 
 import logging
+from typing import Optional
 
 from app.tools import whatsapp_client
 from app.tools.whatsapp_message_policy import MensagemTemplate, enviar_saida
@@ -39,14 +48,16 @@ _TEMPLATE_ESCALONAMENTO_EQUIPE = "escalonamento_equipe"
 _TEMPLATE_MANUTENCAO_EQUIPE = "manutencao_equipe"
 
 
-def _enviar_template_staff(nome_template: str, parametros: list[str], *, operacao: str) -> None:
+def _enviar_template_staff(
+    nome_template: str, parametros: list[str], *, operacao: str
+) -> Optional[str]:
     if not whatsapp_client.envio_ativo():
         logger.info("whatsapp_client: operacao=%s simulado=True", operacao)
-        return
+        return None
 
     destino = whatsapp_client.telefone_staff()
     try:
-        enviar_saida(
+        resultado = enviar_saida(
             destino,
             MensagemTemplate(
                 nome=nome_template,
@@ -61,9 +72,10 @@ def _enviar_template_staff(nome_template: str, parametros: list[str], *, operaca
             erro,
         )
         raise
+    return resultado.message_id
 
 
-def notificar_staff(mensagem: str) -> None:
+def notificar_staff(mensagem: str) -> Optional[str]:
     """Notificador genérico de 1 parâmetro, via template
     `escalonamento_equipe` (3 variáveis — Meta rejeitaria com só 1
     parâmetro se chamado direto com envio real ativo; ver
@@ -73,24 +85,24 @@ def notificar_staff(mensagem: str) -> None:
     ver notificar_staff_manutencao abaixo, que usa o template próprio de
     manutenção (checkup pós-WA-06/WA-08, Ponto 3).
     """
-    _enviar_template_staff(_TEMPLATE_ESCALONAMENTO_EQUIPE, [mensagem], operacao="notificar_staff")
+    return _enviar_template_staff(_TEMPLATE_ESCALONAMENTO_EQUIPE, [mensagem], operacao="notificar_staff")
 
 
-def notificar_staff_escalonamento(protocolo: str, motivo: str, descricao: str) -> None:
+def notificar_staff_escalonamento(protocolo: str, motivo: str, descricao: str) -> Optional[str]:
     """A5 estruturado: protocolo, motivo e descrição na ordem da Meta."""
-    _enviar_template_staff(
+    return _enviar_template_staff(
         _TEMPLATE_ESCALONAMENTO_EQUIPE,
         [protocolo, motivo, descricao],
         operacao="notificar_staff_escalonamento",
     )
 
 
-def notificar_staff_manutencao(parametros: list[str]) -> None:
+def notificar_staff_manutencao(parametros: list[str]) -> Optional[str]:
     """A3 estruturado (checkup pós-WA-06/WA-08, Ponto 3): `parametros` já
     vem pronto de app/tools/mensagens_manutencao.py::
     montar_parametros_notificacao_gestora, na ordem protocolo/imóvel/
     categoria/urgência/descrição do template `manutencao_equipe` — esta
     função só transporta, não reformata nada."""
-    _enviar_template_staff(
+    return _enviar_template_staff(
         _TEMPLATE_MANUTENCAO_EQUIPE, parametros, operacao="notificar_staff_manutencao"
     )

@@ -17,6 +17,7 @@ cliente em WA-05/WA-06/WA-09 — não são tocados por esta task.
 """
 
 import logging
+import re
 import os
 from typing import Optional
 from urllib.parse import urlsplit
@@ -501,10 +502,18 @@ def enviar_template(
     template: dict = {"name": nome, "language": {"code": lang}}
     componentes: list[dict] = []
     if parametros:
+        # A Graph API rejeita (HTTP 400) qualquer parametro de template que
+        # contenha quebra de linha ou tab -- parametro de template tem que
+        # ser texto corrido. Mensagens montadas com \n\n para leitura humana
+        # (ex: montar_alerta_renovacao/montar_calculo_reajuste, WA-09)
+        # precisam ser saneadas aqui antes de virar parametro de body.
         componentes.append(
             {
                 "type": "body",
-                "parameters": [{"type": "text", "text": parametro} for parametro in parametros],
+                "parameters": [
+                    {"type": "text", "text": re.sub(r"[\n\t]+", " ", parametro).strip()}
+                    for parametro in parametros
+                ],
             }
         )
     componentes.extend(

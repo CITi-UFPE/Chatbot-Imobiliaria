@@ -11,10 +11,16 @@ Isso é proposital: quando a API real do WhatsApp entrar (Semana 4), só a
 FONTE do payload muda (Meta em vez do formulário de teste) — a lógica de
 recebimento, esta função, não precisa ser reescrita.
 
-Três tipos de mensagem tratados, cada um com seu próprio caminho:
-  - "text" (ou ausente): fluxo de sempre — resolve contract_id pelo
+Quatro tipos de mensagem tratados, cada um com seu próprio caminho:
+  - "text" de um inquilino: fluxo de sempre — resolve contract_id pelo
     telefone do inquilino, classifica e roteia entre A1/A3/A5 (ver
     app/orchestrator/orchestrator.py::rotear_mensagem).
+  - "text" da FERNANDA (staff), reconhecida pelo telefone remetente ==
+    WHATSAPP_STAFF_PHONE_NUMBER: reconhecida ANTES de cair no fluxo de
+    inquilino acima (Migration 022) — é o reply nativo dela a uma
+    notificação de escalonamento do A5. Vai pra _processar_resposta_staff,
+    nunca passa por _resolver_contract_id pelo telefone DELA (ele não está
+    em contracts.telefone_whatsapp).
   - "image"/"document": comprovante de pagamento (A2) — mesmo contract_id
     resolvido pelo telefone do inquilino, mas SEM passar pelo classificador
     de texto (não há texto pra classificar); vai direto pra
@@ -36,6 +42,12 @@ from typing import Optional
 from supabase import create_client
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from app.agents.a5_escalonamento.resposta_gestora import (
+    compor_resposta_inquilino,
+    identificar_contrato_por_wamid,
+    marcar_resolvido,
+    obter_escalonamento_aberto,
+)
 from app.orchestrator.agent_auth import obter_client_agente
 from app.orchestrator.orchestrator import (
     rotear_clique_botao_a2,
@@ -43,6 +55,7 @@ from app.orchestrator.orchestrator import (
     rotear_mensagem,
 )
 from app.orchestrator.phone_normalization import gerar_candidatos_telefone_br
+from app.tools import whatsapp_client
 from app.tools.whatsapp_client import baixar_midia, mascarar_telefone
 from app.tools.whatsapp_message_policy import (
     TEMPLATE_RETOMADA_ATENDIMENTO,
@@ -114,10 +127,33 @@ def processar_mensagem_recebida(payload: dict, *, responder_via_whatsapp: bool =
     if tipo_mensagem in ("image", "document"):
         return _processar_comprovante(mensagem, responder_via_whatsapp=responder_via_whatsapp)
 
+    if _eh_mensagem_da_staff(mensagem.get("from", "")):
+        return _processar_resposta_staff(mensagem, responder_via_whatsapp=responder_via_whatsapp)
+
     if tipo_mensagem == "audio":
         return _processar_audio(mensagem, responder_via_whatsapp=responder_via_whatsapp)
 
     return _processar_mensagem_texto(mensagem, responder_via_whatsapp=responder_via_whatsapp)
+
+
+def _eh_mensagem_da_staff(telefone_remetente: str) -> bool:
+    """Compara o telefone de quem mandou a mensagem com
+    WHATSAPP_STAFF_PHONE_NUMBER — mesmo telefone que recebe as notificações
+    de escalonamento/manutenção/alerta contratual (whatsapp_client.
+    telefone_staff()). Comparação só por dígitos (sem '+', espaços etc.),
+    mesma normalização usada no transporte de envio
+    (whatsapp_client._normalizar_destino). Sem a variável configurada,
+    nunca reconhece ninguém como staff — mais seguro cair no fluxo normal
+    de inquilino (que só falha se o telefone realmente não corresponder a
+    contrato nenhum) do que arriscar tratar um inquilino como staff."""
+    staff = os.environ.get("WHATSAPP_STAFF_PHONE_NUMBER")
+    if not staff or not telefone_remetente:
+        return False
+    return _somente_digitos(telefone_remetente) == _somente_digitos(staff)
+
+
+def _somente_digitos(telefone: str) -> str:
+    return "".join(c for c in telefone if c.isdigit())
 
 
 def _enviar_resposta_se_necessario(
@@ -375,6 +411,135 @@ def _processar_clique_botao(mensagem: dict) -> Optional[str]:
     button_id = interactive.get("button_reply", {}).get("id", "")
     telefone_remetente = mensagem.get("from", "")
     return rotear_clique_botao_a2(button_id, telefone_remetente)
+
+
+def _enviar_texto_staff_se_necessario(
+    telefone_staff: str, texto: str, responder_via_whatsapp: bool
+) -> None:
+    """Confirmação/erro curto de volta pra Fernanda (nunca pro inquilino) —
+    mesma cautela de _enviar_resposta_se_necessario: falha de transporte é
+    logada, nunca propagada (os efeitos de negócio já aconteceram ou já
+    foram decididos antes desta chamada)."""
+    if not responder_via_whatsapp or not telefone_staff:
+        return
+    try:
+        whatsapp_client.enviar_texto(telefone_staff, texto)
+    except Exception:
+        logger.exception(
+            "Falha ao enviar confirmação/erro para a staff (%s).",
+            mascarar_telefone(telefone_staff),
+        )
+
+
+def _processar_resposta_staff(mensagem: dict, *, responder_via_whatsapp: bool = False) -> Optional[str]:
+    """Reply nativo da Fernanda a uma notificação de escalonamento do A5
+    (Migration 022) — ela segura a mensagem original e responde. Devolve a
+    resposta composta pro inquilino, quando tudo dá certo; em qualquer
+    caminho de falha/ambiguidade, devolve (e manda de volta PRA ELA, nunca
+    pro inquilino) uma mensagem curta explicando o que faltou — nunca
+    adivinha a qual caso ou a qual inquilino a resposta se refere.
+
+    Correlação por `context.id` (reply nativo do WhatsApp), não por "o caso
+    mais recente" — com vários escalonamentos abertos ao mesmo tempo, só o
+    reply nativo diz com certeza qual notificação está sendo respondida."""
+    texto = mensagem.get("text", {}).get("body", "")
+    telefone_staff = mensagem.get("from", "")
+    wamid_respondido = mensagem.get("context", {}).get("id")
+
+    if not wamid_respondido:
+        resposta = (
+            "Não consegui identificar a qual caso esta resposta se refere — toque em "
+            "'Responder' diretamente na notificação do caso (com o protocolo) antes de "
+            "digitar a resposta."
+        )
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        return resposta
+
+    try:
+        contract_id = identificar_contrato_por_wamid(wamid_respondido)
+    except Exception:
+        logger.exception("Falha ao identificar escalonamento pelo wamid %s", wamid_respondido)
+        resposta = "Tive um problema para localizar esse caso — verifique manualmente no banco."
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        return resposta
+
+    if contract_id is None:
+        resposta = (
+            "Não encontrei um caso em aberto correspondente a essa notificação (pode já "
+            "ter sido resolvido, ou o reply não foi feito na mensagem certa)."
+        )
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        return resposta
+
+    try:
+        client = obter_client_agente(contract_id)
+        escalonamento = obter_escalonamento_aberto(client, wamid_respondido)
+    except Exception:
+        logger.exception("Falha ao buscar escalonamento aberto (contrato %s)", contract_id)
+        resposta = "Tive um problema para localizar esse caso — verifique manualmente no banco."
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        return resposta
+
+    if escalonamento is None:
+        resposta = "Esse caso não está mais em aberto (já deve ter sido resolvido)."
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        return resposta
+
+    try:
+        resposta_inquilino = compor_resposta_inquilino(escalonamento["descricao"], texto)
+    except Exception:
+        logger.exception("Falha ao compor resposta pro inquilino (contrato %s)", contract_id)
+        resposta = "Tive um problema para compor a resposta — verifique manualmente."
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        return resposta
+
+    if not responder_via_whatsapp:
+        # Chat simulado (dev_chat): nunca dispara envio real nenhum (nem pro
+        # inquilino nem confirmação pra staff) — só devolve o que TERIA sido
+        # mandado, pra visualização/teste.
+        return (
+            f"[simulado] resposta ao inquilino do contrato {contract_id} "
+            f"(protocolo {escalonamento['protocolo']}): {resposta_inquilino!r}"
+        )
+
+    telefone_inquilino = escalonamento["telefone_whatsapp"]
+    try:
+        saida = decidir_saida_para_contrato(
+            client,
+            reativa=True,
+            texto=resposta_inquilino,
+            template=TEMPLATE_RETOMADA_ATENDIMENTO,
+        )
+        enviar_saida(telefone_inquilino, saida)
+    except Exception:
+        logger.exception(
+            "Falha ao enviar resposta da gestora ao inquilino (contrato %s) — escalonamento "
+            "continua 'aberto', pode ser reprocessado.",
+            contract_id,
+        )
+        _enviar_texto_staff_se_necessario(
+            telefone_staff,
+            "Tive um problema para entregar sua resposta ao inquilino — o caso continua "
+            "em aberto, pode tentar de novo.",
+            responder_via_whatsapp,
+        )
+        return "Falha ao enviar resposta ao inquilino (ver logs)."
+
+    try:
+        marcar_resolvido(client, escalonamento["protocolo"])
+    except Exception:
+        logger.exception(
+            "Resposta entregue ao inquilino mas falha ao marcar escalonamento %s como "
+            "resolvido — corrigir manualmente no banco.",
+            escalonamento["protocolo"],
+        )
+
+    _enviar_texto_staff_se_necessario(
+        telefone_staff,
+        f"Repassado ao inquilino! (protocolo {escalonamento['protocolo']})",
+        responder_via_whatsapp,
+    )
+    return resposta_inquilino
 
 
 def _baixar_midia_whatsapp(media_id: Optional[str]) -> tuple[str, str]:
