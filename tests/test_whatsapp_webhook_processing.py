@@ -354,6 +354,63 @@ def test_midia_simulada_com_dados_base64_nao_chama_baixar_midia(monkeypatch, fak
 
 
 # ======================================================================
+# Áudio — nunca vira texto vazio, nunca passa por classificação
+# ======================================================================
+
+
+def _payload_audio(telefone: str = "+5581999998888", media_id: str = "wamid-audio-1") -> dict:
+    mensagem = {
+        "id": "wamid.audio1",
+        "from": telefone,
+        "type": "audio",
+        "audio": {"mime_type": "audio/ogg; codecs=opus", "id": media_id},
+    }
+    return {"entry": [{"changes": [{"value": {"messages": [mensagem]}}]}]}
+
+
+def test_audio_nunca_chama_roteamento_de_texto(monkeypatch, fake_client):
+    """Regressão do bug relatado: antes desta correção, um áudio virava
+    texto="" e caía no roteamento normal (classificar_intencao/rotear_mensagem),
+    quase sempre terminando na mensagem genérica do A5."""
+    telefone = "+5581999998888"
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
+
+    chamou_rotear = []
+    monkeypatch.setattr(pm, "rotear_mensagem", lambda cid, texto: chamou_rotear.append((cid, texto)) or ("x", "A1"))
+    enviados = _capturar_envios(monkeypatch)
+
+    resposta = pm.processar_mensagem_recebida(_payload_audio(telefone=telefone), responder_via_whatsapp=True)
+
+    assert chamou_rotear == []  # nunca passou pelo roteamento normal
+    assert resposta is not None
+    assert "áudio" in resposta.lower() or "audio" in resposta.lower()
+    assert "texto" in resposta.lower()  # deixa claro que precisa mandar em texto
+    assert enviados == [(telefone, resposta)]
+
+
+def test_audio_sem_contrato_encontrado_usa_fallback_seguro(monkeypatch):
+    telefone = "+5581999990000"
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: None)
+    enviados = _capturar_envios(monkeypatch)
+
+    resposta = pm.processar_mensagem_recebida(_payload_audio(telefone=telefone), responder_via_whatsapp=True)
+
+    assert resposta is not None
+    assert "Nenhum contrato ativo encontrado" in resposta
+    assert enviados == [(telefone, "retomada_atendimento")]
+
+
+def test_audio_simulado_nao_chama_whatsapp(monkeypatch, fake_client):
+    monkeypatch.setattr(pm, "_resolver_contract_id", lambda tel: "contract-1")
+    enviados = _capturar_envios(monkeypatch)
+
+    resposta = pm.processar_mensagem_recebida(_payload_audio())  # responder_via_whatsapp padrão: False
+
+    assert resposta is not None
+    assert enviados == []
+
+
+# ======================================================================
 # Evento de status (sem "messages")
 # ======================================================================
 

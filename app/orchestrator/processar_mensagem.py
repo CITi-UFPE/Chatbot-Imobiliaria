@@ -114,6 +114,9 @@ def processar_mensagem_recebida(payload: dict, *, responder_via_whatsapp: bool =
     if tipo_mensagem in ("image", "document"):
         return _processar_comprovante(mensagem, responder_via_whatsapp=responder_via_whatsapp)
 
+    if tipo_mensagem == "audio":
+        return _processar_audio(mensagem, responder_via_whatsapp=responder_via_whatsapp)
+
     return _processar_mensagem_texto(mensagem, responder_via_whatsapp=responder_via_whatsapp)
 
 
@@ -303,6 +306,55 @@ def _processar_comprovante(mensagem: dict, *, responder_via_whatsapp: bool = Fal
         responder_via_whatsapp,
         client_agente=client,
     )
+    return resposta
+
+
+_RESPOSTA_AUDIO_NAO_SUPORTADO = (
+    "Eu ainda não consigo entender mensagens de áudio por aqui. Pode escrever "
+    "em texto, por favor? Assim eu já consigo te ajudar direto."
+)
+
+
+def _processar_audio(mensagem: dict, *, responder_via_whatsapp: bool = False) -> Optional[str]:
+    """Mensagem de áudio — hoje sem suporte de transcrição. Responde de forma
+    honesta e específica em vez de deixar cair no fluxo de texto com string
+    vazia (o que antes terminava quase sempre na mensagem genérica do A5).
+    Ainda registra a troca em conversation_logs, igual aos outros tipos de
+    mensagem, para não perder o histórico da conversa."""
+    try:
+        telefone = mensagem["from"]
+    except (KeyError, TypeError):
+        logger.exception("Mensagem de áudio em formato inesperado, ignorando.")
+        return "Erro: payload em formato inesperado (ver logs)."
+
+    try:
+        contract_id = _resolver_contract_id(telefone)
+    except Exception:
+        logger.exception("Falha ao resolver contract_id para o telefone %s", telefone)
+        resposta = "Erro ao resolver o contrato para esse telefone (ver logs)."
+        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        return resposta
+
+    if contract_id is None:
+        logger.warning("Nenhum contrato ativo encontrado para o telefone %s", telefone)
+        resposta = f"Nenhum contrato ativo encontrado para o telefone {telefone}."
+        _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp)
+        return resposta
+
+    resposta = _RESPOSTA_AUDIO_NAO_SUPORTADO
+    client = None
+    try:
+        client = obter_client_agente(contract_id)
+        _registrar_log_mensagem(
+            client, {"p_remetente": "inquilino", "p_agente_responsavel": None, "p_mensagem": "[áudio recebido]"}
+        )
+        _registrar_log_mensagem(
+            client, {"p_remetente": "agente", "p_agente_responsavel": None, "p_mensagem": resposta}
+        )
+    except Exception:
+        logger.exception("Falha ao registrar log de áudio para contrato %s", contract_id)
+
+    _enviar_resposta_se_necessario(telefone, resposta, responder_via_whatsapp, client_agente=client)
     return resposta
 
 
