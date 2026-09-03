@@ -110,6 +110,32 @@ def test_enviar_template_payload_com_parametros_ordenados(monkeypatch):
     ]
 
 
+def test_enviar_template_remove_quebra_de_linha_e_tab_dos_parametros(monkeypatch):
+    """A Graph API rejeita (HTTP 400) parametro de template com \n ou \t --
+    mensagens montadas para leitura humana com \n\n (ex:
+    montar_alerta_renovacao/montar_calculo_reajuste, WA-09) precisam chegar
+    aqui como texto corrido."""
+    capturado = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        capturado["json"] = _ler_json(request)
+        return httpx.Response(200, json={"messages": [{"id": "wamid.T2"}]})
+
+    monkeypatch.setattr(wc, "_construir_client", _client_mockado(handler))
+
+    wc.enviar_template(
+        "5581999998888",
+        "alerta_contratual",
+        ["Reajuste de aluguel", "Primeira linha.\n\nSegunda linha.\tcom tab."],
+    )
+
+    parametros_enviados = capturado["json"]["template"]["components"][0]["parameters"]
+    assert parametros_enviados == [
+        {"type": "text", "text": "Reajuste de aluguel"},
+        {"type": "text", "text": "Primeira linha. Segunda linha. com tab."},
+    ]
+
+
 def test_enviar_template_sem_parametros_omite_components(monkeypatch):
     capturado = {}
 
