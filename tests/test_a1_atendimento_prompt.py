@@ -22,3 +22,29 @@ def test_system_prompt_deixa_saudacao_como_excecao_ao_escopo():
     assert prompt.index("## SAUDAÇÃO") > prompt.index("## ESCOPO")
     assert "exceção" in prompt.lower()
     assert "sem chamar nenhuma tool" in prompt.lower()
+
+
+def test_system_prompt_tem_secao_de_contas_em_aberto():
+    assert "## CONTAS EM ABERTO" in atendimento.SYSTEM_PROMPT
+
+
+def test_system_prompt_explica_os_status_de_cobranca_em_linguagem_simples():
+    """O modelo não deve citar o valor cru do campo 'status' — precisa
+    parafrasear. Este teste tranca que as explicações de cada status
+    continuam no prompt (regressão)."""
+    prompt = atendimento.SYSTEM_PROMPT.lower()
+    for status_explicado in ("pendente", "atrasado", "aguardando_confirmacao", "divergente", "em_negociacao"):
+        assert status_explicado in prompt
+
+
+def test_system_prompt_limita_historico_de_pagamento_a_30_dias():
+    """Regressão do requisito explícito do usuário: histórico de pagamento
+    não é irrestrito — só cobranças com data de pagamento identificada nos
+    últimos 30 dias, e o modelo não pode inventar nada fora dessa janela."""
+    prompt = atendimento.SYSTEM_PROMPT
+    assert "30 dias" in prompt
+    assert "nunca" in prompt.lower() and "invente" in prompt.lower()
+
+
+def test_system_prompt_menciona_tool_buscar_status_cobranca():
+    assert atendimento.TOOL_BUSCAR_STATUS_COBRANCA in atendimento.SYSTEM_PROMPT
