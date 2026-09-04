@@ -44,7 +44,11 @@ from datetime import date
 
 import anthropic
 
-from app.agents.a1_atendimento.schemas import DadosInquilino, RegistroHistorico
+from app.agents.a1_atendimento.schemas import (
+    DadosInquilino,
+    RegistroHistorico,
+    StatusCobrancaContrato,
+)
 from app.tools.calculo_reajuste import INDICES_COM_CALCULO_AUTOMATICO, proximo_aniversario_contrato
 from app.agents.a5_escalonamento import (
     AvaliacaoEscalonamento,
@@ -65,6 +69,7 @@ MAX_RODADAS_TOOL_USE = 4
 TOOL_BUSCAR_DADOS = "buscar_dados_inquilino"
 TOOL_CONSULTAR_HISTORICO = "consultar_historico"
 TOOL_ESCALAR_SEM_CLAUSULA = "escalar_sem_clausula"
+TOOL_BUSCAR_STATUS_COBRANCA = "buscar_status_cobranca_inquilino"
 
 SYSTEM_PROMPT = """Você é o Agente de Atendimento ao Inquilino de uma imobiliária, falando via WhatsApp.
 
@@ -219,6 +224,19 @@ def _tools_schema() -> list[dict]:
             },
         },
         {
+            "name": TOOL_BUSCAR_STATUS_COBRANCA,
+            "description": (
+                "Busca as cobranças (aluguel/água) do contrato desta conversa que ainda "
+                "não estão pagas/confirmadas ('charges_abertas', com status e dias de "
+                "atraso), e as cobranças com pagamento identificado nos ÚLTIMOS 30 DIAS "
+                "('charges_pagas_ultimos_30_dias'). Chame quando o inquilino perguntar se "
+                "tem alguma conta/cobrança em aberto, o status de um pagamento, ou se um "
+                "pagamento recente já foi identificado. NÃO é histórico completo — "
+                "pagamentos com mais de 30 dias não aparecem aqui."
+            ),
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        {
             "name": TOOL_ESCALAR_SEM_CLAUSULA,
             "description": (
                 "Chame esta tool quando 'buscar_dados_inquilino' já tiver sido consultada e "
@@ -289,6 +307,22 @@ def _executar_consultar_historico(
     for registro in registros:
         RegistroHistorico.model_validate(registro)
     return registros
+
+
+def _executar_buscar_status_cobranca(contract_id: str) -> dict:
+    # Mesmo padrão de segurança de _executar_buscar_dados_inquilino: contract_id
+    # só escolhe QUAL client/token usar — a RPC em si não recebe contract_id como
+    # argumento, resolve isso internamente via agent_contract_id().
+    client = obter_client_agente(contract_id)
+    resposta = client.rpc(TOOL_BUSCAR_STATUS_COBRANCA, {}).execute()
+    dados = resposta.data or {"charges_abertas": [], "charges_pagas_ultimos_30_dias": []}
+
+    # Valida contra o schema esperado ANTES de repassar pro modelo — mesmo motivo
+    # de _executar_buscar_dados_inquilino: se a RPC mudar de formato no banco sem
+    # avisar aqui, isso deve quebrar aqui de forma explícita.
+    StatusCobrancaContrato.model_validate(dados)
+
+    return dados
 
 
 def responder_inquilino(
@@ -369,6 +403,8 @@ def responder_inquilino(
                         bloco.input.get("limite", 10),
                         bloco.input.get("tipo", "todos"),
                     )
+                elif bloco.name == TOOL_BUSCAR_STATUS_COBRANCA:
+                    resultado = _executar_buscar_status_cobranca(contract_id)
                 else:
                     logger.warning("Tool desconhecida chamada pelo A1: %s", bloco.name)
                     resultado = {"erro": f"tool '{bloco.name}' não existe"}
