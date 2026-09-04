@@ -104,3 +104,64 @@ class RegistroHistorico(BaseModel):
     status: str
     resumo: str
     criado_em: str
+
+
+# --- Status de cobrança (Migration 023 — buscar_status_cobranca_inquilino) --
+#
+# TipoCobranca/StatusCharge duplicam de propósito os equivalentes em
+# app/agents/a2_cobranca/schemas.py (mesmos valores, mesma origem: a check
+# constraint de `charges` na Migration 001) — cada agente fica isolado do
+# domínio do outro, mesmo espírito de CategoriaClausulaContrato acima não
+# ser importado de lugar nenhum. Nunca importar deste módulo para o A2 nem
+# o contrário.
+
+TipoCobranca = Literal["aluguel", "agua"]
+StatusCharge = Literal[
+    "pendente", "aguardando_confirmacao", "confirmado", "divergente",
+    "atrasado", "em_negociacao", "quitado",
+]
+
+
+class ChargeEmAberto(BaseModel):
+    """Uma cobrança do contrato ainda não paga/confirmada — qualquer status
+    diferente de 'confirmado'/'quitado'. Espelha um item de
+    `charges_abertas` no retorno de `buscar_status_cobranca_inquilino`
+    (ver docs/schemas/023_status_cobranca_a1.sql)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    charge_id: str
+    tipo: TipoCobranca
+    mes_referencia: str
+    valor_esperado: float
+    data_vencimento: str
+    dias_atraso: int
+    status: StatusCharge
+
+
+class ChargePagaRecente(BaseModel):
+    """Uma cobrança com pagamento identificado (`data_pagamento` != null)
+    nos ÚLTIMOS 30 DIAS — a janela já vem filtrada pela própria RPC no
+    banco, não é uma lista completa de pagamentos. Ver o aviso
+    correspondente no SYSTEM_PROMPT de atendimento.py."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    charge_id: str
+    tipo: TipoCobranca
+    mes_referencia: str
+    valor_esperado: float
+    valor_identificado: Optional[float] = None
+    data_pagamento: str
+    status: StatusCharge
+
+
+class StatusCobrancaContrato(BaseModel):
+    """Retorno esperado da RPC `buscar_status_cobranca_inquilino` (sem
+    parâmetros — o contrato é resolvido internamente via
+    agent_contract_id(), mesmo padrão de DadosInquilino acima)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    charges_abertas: list[ChargeEmAberto] = Field(default_factory=list)
+    charges_pagas_ultimos_30_dias: list[ChargePagaRecente] = Field(default_factory=list)
