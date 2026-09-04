@@ -88,11 +88,31 @@ def notificar_staff(mensagem: str) -> Optional[str]:
     return _enviar_template_staff(_TEMPLATE_ESCALONAMENTO_EQUIPE, [mensagem], operacao="notificar_staff")
 
 
-def notificar_staff_escalonamento(protocolo: str, motivo: str, descricao: str) -> Optional[str]:
-    """A5 estruturado: protocolo, motivo e descrição na ordem da Meta."""
+def notificar_staff_escalonamento(
+    protocolo: str,
+    motivo: str,
+    descricao: str,
+    nome_inquilino: str = "",
+    imovel_identificacao: str = "",
+    telefone_inquilino: str = "",
+) -> Optional[str]:
+    """A5 estruturado: protocolo, motivo, descrição, e agora também
+    nome/imóvel/telefone do inquilino — sem isso a equipe recebia a
+    notificação sem saber PRA QUEM ligar de volta (ver
+    docs/superpowers/plans/2026-09-03-correcoes-fluxo-escalonamento/02-...).
+    Os 3 últimos têm default "" só para não quebrar quem já chamava esta
+    função antes; `executar_escalonamento` (único chamador real) sempre
+    passa os 6."""
     return _enviar_template_staff(
         _TEMPLATE_ESCALONAMENTO_EQUIPE,
-        [protocolo, motivo, descricao],
+        [
+            protocolo,
+            motivo,
+            descricao,
+            nome_inquilino or "não informado",
+            imovel_identificacao or "não informado",
+            telefone_inquilino or "não informado",
+        ],
         operacao="notificar_staff_escalonamento",
     )
 

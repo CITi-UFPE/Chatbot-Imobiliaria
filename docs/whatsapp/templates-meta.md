@@ -256,6 +256,8 @@ inquilino, datas, valores) — ver `montar_alerta_renovacao`/
 **Corpo sugerido:**
 ```
 Novo caso escalado — protocolo {{1}}
+Inquilino: {{4}} — {{5}}
+Telefone: {{6}}
 Motivo: {{2}}
 {{3}}
 
@@ -266,15 +268,25 @@ O caso aguarda acompanhamento da equipe.
 1. Protocolo gerado pelo banco (`agent_create_escalation`)
 2. Motivo do escalonamento (`avaliacao.motivo`)
 3. Descrição objetiva do que motivou o escalonamento (`avaliacao.descricao`)
+4. Nome do inquilino (`inquilino_nome`, via `buscar_dados_cobranca_contrato`) — "não informado" se a busca falhar
+5. Identificação do imóvel (`imovel_identificacao`) — "não informado" se a busca falhar
+6. Telefone do inquilino (`telefone_whatsapp`, formato E.164) — "não informado" se a busca falhar
 
 **Exemplo:** `ESC-2026-0042`, `pedido_humano`, `Inquilino pediu falar com
 uma pessoa depois de duas tentativas de esclarecimento sobre a cláusula de
-rescisão.`
+rescisão.`, `João Pereira`, `Apto 305`, `+5581999998888`
 
 **Consumidor:** `app/agents/a5_escalonamento/escalonamento.py::executar_escalonamento`
 (chama `notificar_staff_escalonamento`,
 `app/agents/a5_escalonamento/notificacao.py`) — transporte conectado pela
-WA-05 e parâmetros separados pela WA-08.
+WA-05 e parâmetros separados pela WA-08; nome/imóvel/telefone do inquilino
+(via `buscar_dados_cobranca_contrato`) adicionados depois.
+
+**Status operacional:** consumido pelo código, mas o cadastro na Meta ainda
+está com a versão antiga de 3 variáveis (protocolo/motivo/descrição) —
+precisa ser resubmetido com as 6 variáveis acima antes do envio real
+(`WHATSAPP_ENVIO_ATIVO=true`) funcionar; caso contrário a Meta rejeita por
+divergência de contagem de variáveis (mesma ressalva dos templates 8–11).
 
 ---
 

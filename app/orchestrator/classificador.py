@@ -33,7 +33,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 MODEL = "claude-sonnet-5"
 
-AgenteDestino = Literal["A1", "A3", "A5"]
+# "FORA_DE_ESCOPO" não é um agente — é um pseudo-destino que o orquestrador
+# (app/orchestrator/orchestrator.py::rotear_mensagem) intercepta ANTES de
+# chamar qualquer agente de negócio, devolvendo uma recusa direta e fixa.
+# Existe porque, sem ele, conteúdo sem NENHUMA relação com a locação (papo
+# pessoal, pergunta sobre outro imóvel) tinha que ser forçado em A1 ou A5 —
+# A1 tentava usar as tools de contrato pra algo que não é sobre o contrato
+# (risco de alucinar ou escalar via escalar_sem_clausula prometendo um
+# retorno que não faz sentido pra papo aleatório); A5 caía no mesmo buraco.
+#
+# Saudação pura ("oi, tudo bem?") NÃO tem destino próprio — vai direto pro
+# A1 (ver SYSTEM_PROMPT abaixo), que responde com naturalidade, gerada pelo
+# próprio modelo (não uma string fixa em Python). Ver
+# docs/superpowers/plans/2026-09-03-correcoes-fluxo-escalonamento/
+# 01-mensagem-fallback-a5-e-audio.md (Revisão 4).
+AgenteDestino = Literal["A1", "A3", "A5", "FORA_DE_ESCOPO"]
 Urgencia = Literal["alta", "media", "baixa"]
 
 
@@ -64,12 +78,20 @@ SYSTEM_PROMPT = (
     "onde/como pagar (chave Pix, dados bancários), perguntas HIPOTÉTICAS sobre "
     "consequências de atraso ('quanto fica de multa e juros se eu atrasar?'), aviso pontual "
     "de atraso sem pedido de desconto ('posso pagar amanhã?'), aviso informal de pagamento "
-    "já feito sem anexar comprovante ('fiz o pix', 'já paguei'), e pedidos administrativos "
+    "já feito sem anexar comprovante ('fiz o pix', 'já paguei'), pedidos administrativos "
     "simples sobre o contrato (ex: 'manda o contrato pra eu assinar', 'me envia uma cópia') "
     "— para esses últimos o A1 apenas confirma que vai verificar com a equipe, não tenta "
-    "executar a ação sozinho. Tudo isso é informação/aviso, sem risco financeiro/jurídico "
-    "e sem exigir uma decisão humana imediata — diferente de pedido de desconto/renegociação "
-    "ou de algo que só uma pessoa da equipe pode decidir (isso é A5).\n"
+    "executar a ação sozinho — perguntas sobre o imóvel ou o condomínio que NÃO estejam "
+    "literalmente numa cláusula do contrato (ex: 'o que diz o regimento do condomínio sobre "
+    "animais?', 'posso usar a churrasqueira do prédio?'): o A1 tenta responder com os dados "
+    "do contrato e, se não achar cláusula correspondente, escala de verdade via sua própria "
+    "tool 'escalar_sem_clausula' — não é FORA_DE_ESCOPO, ver abaixo — e também saudação "
+    "pura, sem pedido concreto (ex: 'oi', 'oi, tudo bem?', 'bom dia'): o A1 responde com "
+    "naturalidade e cordialidade, sem tratar isso como fora do seu escopo (recusar quem só "
+    "está cumprimentando seria hostil e prejudicaria o relacionamento com o inquilino). "
+    "Tudo isso é informação/aviso, sem risco financeiro/jurídico e sem exigir uma decisão "
+    "humana imediata — diferente de pedido de desconto/renegociação ou de algo que só uma "
+    "pessoa da equipe pode decidir (isso é A5).\n"
     "- A3 (Manutenção): problemas físicos no imóvel (elétrica, hidráulica, estrutural, "
     "pintura) que NÃO sejam risco grave ou emergência (isso é A5).\n"
     "- A5 (Escalonamento Humano): pedido explícito de humano; risco financeiro/jurídico "
@@ -80,13 +102,32 @@ SYSTEM_PROMPT = (
     "ou sinais de conversa em loop/frustração crescente. Na dúvida entre A5 e A1 quando há "
     "risco financeiro, jurídico ou de segurança envolvido, prefira A5 — o próprio A5 decide "
     "com mais detalhe se de fato escala.\n\n"
+    "USE 'FORA_DE_ESCOPO' (não A1, não A5) quando a mensagem tiver algum conteúdo além de "
+    "mera saudação, mas esse conteúdo NÃO tiver NENHUMA relação com o contrato, o imóvel ou "
+    "a locação desta conversa. Exemplos claros: papo pessoal ou aleatório com conteúdo "
+    "(piadas, comentários genéricos, elogios/reclamações sem pedido concreto relacionado ao "
+    "imóvel); pergunta sobre OUTRO imóvel que não é o desta locação (ex: 'vocês têm "
+    "apartamento pra alugar no bairro X?', 'quanto custa uma casa maior na imobiliária?'); "
+    "qualquer assunto sem nenhuma ligação com a locação, o contrato ou o imóvel deste "
+    "inquilino. NÃO use FORA_DE_ESCOPO para uma saudação pura, sem nenhum outro conteúdo "
+    "(ex: 'oi', 'bom dia', 'tudo bem?') — isso é A1, que responde com naturalidade (ver "
+    "acima); NÃO use FORA_DE_ESCOPO para uma dúvida real sobre ESTE contrato que o sistema "
+    "não consiga responder (isso é A1, que decide via sua própria tool 'escalar_sem_clausula' "
+    "se não achar a cláusula), nem para um pedido administrativo relacionado ao contrato "
+    "(isso é A1 também), nem para uma pergunta sobre o imóvel ou o condomínio que não esteja "
+    "literalmente numa cláusula (ex: regimento interno, uso de área comum — isso também é "
+    "A1: tem relação com o dia a dia do inquilino NESTE imóvel, mesmo que a resposta "
+    "específica não esteja na cláusula, e merece uma tentativa real de resposta com "
+    "escalonamento de verdade se não achar, em vez de uma recusa). Na dúvida entre "
+    "FORA_DE_ESCOPO e A1, prefira A1 — só use FORA_DE_ESCOPO quando a mensagem for "
+    "claramente sem nenhuma relação com a locação.\n\n"
     "Cobrança já em andamento (comprovante, decisão da Fernanda) e gestão contratual "
     "automática (alertas de renovação/reajuste) são tratadas por agentes que reagem a "
     "eventos específicos (imagem recebida, clique de botão, cron diário), nunca a texto "
     "livre do inquilino — por isso não aparecem aqui como destino.\n\n"
     "urgencia: 'alta' para risco de segurança/emergência ou pedido explícito de humano; "
     "'media' para os demais casos de A5 e problemas de manutenção que incomodam o dia a "
-    "dia; 'baixa' para dúvidas/avisos informativos (A1)."
+    "dia; 'baixa' para dúvidas/avisos informativos e saudação (A1) e para FORA_DE_ESCOPO."
 )
 
 

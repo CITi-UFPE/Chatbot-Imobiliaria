@@ -78,21 +78,28 @@ _RESPOSTA_A2_COMPROVANTE_ERRO = (
     "Ele foi registrado, mas pode ser necessário reenviar — nossa equipe vai verificar."
 )
 
-# Fallback de defesa em profundidade: com AgenteDestino restrito a A1/A3/A5
-# (ver classificador.py), o schema da tool nem permite mais o Claude devolver
-# outra coisa — este branch deveria ser inalcançável. Mantido só por
-# segurança, e por isso o texto é genérico de propósito: nunca deve
-# mencionar nome de agente, "ambiente", "implementado" ou qualquer outra
-# palavra que denuncie arquitetura interna pro inquilino (o inquilino nunca
-# pode perceber que está falando com um sistema multiagente).
+# Fallback de defesa em profundidade: com AgenteDestino restrito a
+# A1/A3/A5/FORA_DE_ESCOPO (ver classificador.py), o schema da tool nem
+# permite mais o Claude devolver outra coisa — este branch deveria ser
+# inalcançável. Mantido só por segurança, e por isso o texto é genérico de
+# propósito: nunca deve mencionar nome de agente, "ambiente", "implementado"
+# ou qualquer outra palavra que denuncie arquitetura interna pro inquilino
+# (o inquilino nunca pode perceber que está falando com um sistema
+# multiagente). NÃO promete registro/retorno da equipe, pelo mesmo motivo
+# de _RESPOSTA_FORA_DE_ESCOPO abaixo: nada foi de fato escalado aqui.
 _RESPOSTA_FALLBACK_GENERICO = (
-    "Recebi sua mensagem! Já deixei registrado por aqui e alguém da nossa equipe "
-    "te retorna em breve."
+    "Não consegui entender essa mensagem — pode reformular ou enviar de outra forma?"
 )
 
-_RESPOSTA_A5_SEM_CRITERIO = (
-    "Entendido! Já deixei registrado por aqui — se for necessário, alguém da "
-    "nossa equipe entra em contato."
+# Usada quando a mensagem não tem NENHUMA relação com o contrato/imóvel/
+# locação desta conversa (ver classificador.py::SYSTEM_PROMPT — critério
+# 'FORA_DE_ESCOPO'). Recusa DIRETA e HONESTA: nunca implica que algo foi
+# registrado ou que alguém vai retornar — isso seria falso (nenhum
+# escalonamento roda neste caminho). Saudação pura NÃO cai aqui — vai pro
+# A1 (ver classificador.py e app/agents/a1_atendimento/atendimento.py).
+_RESPOSTA_FORA_DE_ESCOPO = (
+    "Esse assunto não é algo que eu trato por aqui — só cuido do que é "
+    "relacionado ao seu contrato de locação atual. Não vou conseguir ajudar com isso."
 )
 
 
@@ -125,6 +132,14 @@ def rotear_mensagem(
         classificacao.urgencia,
     )
 
+    if classificacao.agente == "FORA_DE_ESCOPO":
+        logger.info(
+            "Contrato %s: mensagem classificada como fora de escopo — recusa direta, "
+            "sem chamar A1/A5.",
+            contract_id,
+        )
+        return _RESPOSTA_FORA_DE_ESCOPO, None
+
     if classificacao.agente == "A1":
         return _rotear_para_a1(contract_id, texto, historico_conversa)
 
@@ -134,10 +149,10 @@ def rotear_mensagem(
     if classificacao.agente == "A5":
         return _rotear_para_a5(contract_id, texto, historico_conversa)
 
-    # Inalcançável: AgenteDestino só aceita "A1"/"A3"/"A5" (ver
-    # classificador.py) — o schema da tool nem permite ao Claude devolver
-    # outro valor. Mantido por defesa em profundidade, não por expectativa
-    # real de uso.
+    # Inalcançável: AgenteDestino só aceita "A1"/"A3"/"A5"/"FORA_DE_ESCOPO"
+    # (ver classificador.py) — o schema da tool nem permite ao Claude
+    # devolver outro valor. Mantido por defesa em profundidade, não por
+    # expectativa real de uso.
     logger.error(
         "classificar_intencao devolveu agente inesperado %r para contrato %s — "
         "isso não deveria ser possível com o schema atual.",
@@ -212,7 +227,17 @@ def _rotear_para_a5(contract_id: str, texto: str, historico_conversa: str) -> tu
     que esse gancho pertence: o classificador já manda pedido de
     desconto/renegociação direto pro A5 (ver SYSTEM_PROMPT de
     classificador.py), então é este é o caminho que de fato roda no fluxo
-    principal."""
+    principal.
+
+    Quando avaliar_escalonamento decide que NÃO há critério objetivo pra
+    escalar (Claude devolveu None, ou a própria chamada falhou), NÃO existe
+    mais um texto genérico fixo aqui — delega pro A1, que tem acesso aos
+    dados do contrato e tenta responder de verdade (e pode escalar de novo
+    sozinho, com seu próprio critério — ver responder_inquilino). Diferente
+    de conteúdo FORA_DE_ESCOPO (interceptado antes, em rotear_mensagem, sem
+    nunca chegar aqui): o classificador só manda mensagem pra cá quando
+    julga que HÁ relação com o contrato e possível risco/necessidade de
+    decisão humana — vale a pena o A1 tentar, em vez de recusar de cara."""
     try:
         avaliacao = avaliar_escalonamento(texto, historico_conversa)
     except Exception:
@@ -225,7 +250,12 @@ def _rotear_para_a5(contract_id: str, texto: str, historico_conversa: str) -> tu
             pausar_charges_em_negociacao(contract_id)
         return f"{avaliacao.resposta_para_inquilino} (protocolo {protocolo})", "A5"
 
-    return _RESPOSTA_A5_SEM_CRITERIO, "A5"
+    logger.info(
+        "Contrato %s: classificado para A5 mas avaliar_escalonamento não encontrou "
+        "critério objetivo — delegando para A1 em vez do fallback genérico.",
+        contract_id,
+    )
+    return _rotear_para_a1(contract_id, texto, historico_conversa)
 
 
 def rotear_comprovante_a2(
