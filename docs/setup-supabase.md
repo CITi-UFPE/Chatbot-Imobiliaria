@@ -45,7 +45,7 @@ Nota histórica: a primeira versão do `002` criava `staff_users` sem habilitar 
 
 ## 3. Verificação pós-migration
 
-Checklist rápido depois de rodar todas as migrations até a 021:
+Checklist rápido depois de rodar todas as migrations até a 023:
 
 - **Table Editor**: as 9 tabelas presentes (8 de negócio + `staff_users`), todas com RLS habilitado. `contracts` já com a coluna `prazo_indeterminado` (Migration 013).
 - **Storage**: bucket `contracts` existe e está marcado como **Private**.

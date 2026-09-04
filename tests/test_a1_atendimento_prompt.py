@@ -40,10 +40,13 @@ def test_system_prompt_explica_os_status_de_cobranca_em_linguagem_simples():
 def test_system_prompt_limita_historico_de_pagamento_a_30_dias():
     """Regressão do requisito explícito do usuário: histórico de pagamento
     não é irrestrito — só cobranças com data de pagamento identificada nos
-    últimos 30 dias, e o modelo não pode inventar nada fora dessa janela."""
+    últimos 30 dias, e o modelo não pode inventar nada fora dessa janela.
+    Trava conteúdo específico da seção CONTAS EM ABERTO, não frases soltas
+    que já existiam em outras partes do prompt antes desta feature."""
     prompt = atendimento.SYSTEM_PROMPT
-    assert "30 dias" in prompt
-    assert "nunca" in prompt.lower() and "invente" in prompt.lower()
+    assert "charges_pagas_ultimos_30_dias" in prompt
+    assert "só tem visibilidade dos últimos 30 dias" in prompt
+    assert "NUNCA invente se uma cobrança fora dessa janela de 30" in prompt
 
 
 def test_system_prompt_menciona_tool_buscar_status_cobranca():

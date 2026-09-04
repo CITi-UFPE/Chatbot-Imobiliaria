@@ -193,9 +193,14 @@ dias foi paga ou não.
 
 ## AVISO INFORMAL DE PAGAMENTO JÁ FEITO
 Se o inquilino só avisar que já pagou / fez o Pix, sem anexar comprovante (ex: "fiz o
-pix", "já paguei") — agradeça o aviso e peça para enviar o comprovante (foto ou PDF) assim
-que possível, pra dar baixa oficial. Você não tem como confirmar/registrar o pagamento sem
-o comprovante — não diga que já está confirmado.
+pix", "já paguei") — ANTES de pedir o comprovante, chame 'buscar_status_cobranca_inquilino'
+para checar se esse pagamento já foi identificado. Se ele já aparecer em
+'charges_pagas_ultimos_30_dias', confirme isso ao inquilino em vez de pedir o comprovante de
+novo. Se aparecer em 'charges_abertas' como 'aguardando_confirmacao', diga que o comprovante
+já está em conferência pela equipe. Só se não aparecer em nenhuma das duas — agradeça o
+aviso e peça para enviar o comprovante (foto ou PDF) assim que possível, pra dar baixa
+oficial: você não tem como confirmar/registrar o pagamento sem o comprovante nesse caso, não
+diga que já está confirmado.
 
 ## PEDIDOS ADMINISTRATIVOS SIMPLES
 Pedidos como "manda o contrato pra eu assinar", "me envia uma cópia do contrato", ou
@@ -257,7 +262,9 @@ def _tools_schema() -> list[dict]:
                 "('charges_pagas_ultimos_30_dias'). Chame quando o inquilino perguntar se "
                 "tem alguma conta/cobrança em aberto, o status de um pagamento, ou se um "
                 "pagamento recente já foi identificado. NÃO é histórico completo — "
-                "pagamentos com mais de 30 dias não aparecem aqui."
+                "pagamentos com mais de 30 dias não aparecem aqui. O contrato já está "
+                "fixado pela sessão atual; não é possível buscar dados de outro contrato "
+                "através desta tool."
             ),
             "input_schema": {"type": "object", "properties": {}},
         },

@@ -59,6 +59,7 @@ create or replace function public.buscar_status_cobranca_inquilino()
 returns jsonb
 language plpgsql
 security definer
+stable
 set search_path = ''
 as $$
 declare
@@ -72,7 +73,9 @@ begin
     'mes_referencia', ch.mes_referencia,
     'valor_esperado', ch.valor_esperado,
     'data_vencimento', ch.data_vencimento,
-    'dias_atraso', ch.dias_atraso,
+    -- dias_atraso armazenado pode ser negativo para charges ainda não vencidas
+    -- (ver app/agents/a2_cobranca/cobranca.py) — nunca deve chegar assim ao A1.
+    'dias_atraso', greatest(ch.dias_atraso, 0),
     'status', ch.status
   ) order by ch.data_vencimento), '[]'::jsonb)
   into v_abertas
@@ -92,6 +95,7 @@ begin
   into v_pagas_recentes
   from public.charges ch
   where ch.contract_id = v_contract_id
+    and ch.status in ('confirmado', 'quitado')
     and ch.data_pagamento is not null
     and ch.data_pagamento >= (current_date - interval '30 days');
 
