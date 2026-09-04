@@ -37,6 +37,7 @@ As migrations vivem em `docs/schemas/`:
 - `019_garantia_aluguel_antecipado.sql` — adiciona aluguel antecipado às modalidades de garantia.
 - `020_whatsapp_janela_atendimento.sql` — adiciona `agent_get_last_tenant_message_at()`, RPC de leitura da última mensagem recebida do inquilino, sem parâmetro de contrato e escopada por `agent_contract_id()`, usada pela política central de texto/template da WA-08.
 - `021_normalizacao_telefone.sql` — normaliza telefones brasileiros na resolução, cria unicidade equivalente para contratos ativos/pendentes e preserva `resolver_contrato_por_telefone(text) -> uuid|null` para o papel `anon`.
+- `023_status_cobranca_a1.sql` — nova RPC `buscar_status_cobranca_inquilino`, para o A1 responder se há alguma conta/cobrança em aberto (qualquer status diferente de `confirmado`/`quitado`) e o histórico de pagamento identificado nos últimos 30 dias. Fecha a mesma lacuna que a Migration 014 já resolveu para dados bancários, agora para status de cobrança (domínio antes exclusivo do A2, que nunca respondeu por texto).
 
 **Rodar sempre nessa ordem** (001 antes do 002, e assim por diante — várias migrations posteriores dependem de funções/colunas criadas nas anteriores) via **SQL Editor** do dashboard: cole o conteúdo do arquivo, clique em Run, confirme "Success" antes de rodar o próximo.
 

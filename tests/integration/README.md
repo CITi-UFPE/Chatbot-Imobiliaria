@@ -7,7 +7,7 @@ Sem `.env.test` preenchido, **toda a suíte é pulada** (não falha "quebrada") 
 ## 1. Provisionar o projeto Supabase de teste
 
 1. Crie um projeto Supabase **novo e separado** do de produção, mesma região (`sa-east-1` — ver `docs/setup-supabase.md`, seção 1). Nunca reutilize o projeto de produção aqui: os testes fazem `delete` de contratos fictícios e mutam estado (finalização automática, negociação) — não é algo que se queira perto de dado real.
-2. No **SQL Editor** do novo projeto, rode todas as migrations de `docs/schemas/001_create_tables.sql` até `021_normalizacao_telefone.sql`, **em ordem** (várias migrations posteriores dependem de função/coluna criada nas anteriores — ver a lista comentada em `docs/setup-supabase.md`, seção 2). A `020_whatsapp_janela_atendimento.sql` adiciona `agent_get_last_tenant_message_at()` — a RPC que a política central de texto/template da WA-08 usa pra checar a janela de 24h; sem ela aplicada, os testes de integração que dependem dessa política falham na consulta, não na lógica em si. A `021` (a última) normaliza telefone brasileiro na resolução de contrato — sem ela, os testes de variantes de telefone (móvel legado/fixo) falham. Alternativa via `psql`, uma vez que você tenha `SUPABASE_TEST_DB_URL` (passo 3):
+2. No **SQL Editor** do novo projeto, rode todas as migrations de `docs/schemas/001_create_tables.sql` até `023_status_cobranca_a1.sql`, **em ordem** (várias migrations posteriores dependem de função/coluna criada nas anteriores — ver a lista comentada em `docs/setup-supabase.md`, seção 2). A `020_whatsapp_janela_atendimento.sql` adiciona `agent_get_last_tenant_message_at()` — a RPC que a política central de texto/template da WA-08 usa pra checar a janela de 24h; sem ela aplicada, os testes de integração que dependem dessa política falham na consulta, não na lógica em si. A `021` (a última) normaliza telefone brasileiro na resolução de contrato — sem ela, os testes de variantes de telefone (móvel legado/fixo) falham. Alternativa via `psql`, uma vez que você tenha `SUPABASE_TEST_DB_URL` (passo 3):
 
    ```bash
    for f in docs/schemas/0*.sql; do
@@ -23,6 +23,15 @@ Sem `.env.test` preenchido, **toda a suíte é pulada** (não falha "quebrada") 
    ```
 
    Uma linha de retorno confirma a RPC presente; nenhuma linha significa que a `020` ainda não foi aplicada nesse projeto de teste.
+5. Verificação rápida de que a `023` foi aplicada — no **SQL Editor**:
+
+   ```sql
+   select proname from pg_proc where proname = 'buscar_status_cobranca_inquilino';
+   ```
+
+   Uma linha de retorno confirma a RPC presente; sem isso, os testes de
+   `test_a1_status_cobranca_integration.py` (Task 6 deste plano) falham na
+   consulta, não na lógica em si.
 
 ## 2. Configurar `.env.test`
 
