@@ -448,6 +448,62 @@ def test_clique_interativo_nao_envia_resposta_automatica(monkeypatch):
     assert chamadas_roteamento == [("confirmar|contract-1|charge-1", "+5581900000000")]
 
 
+def _payload_clique_botao_template(
+    payload_botao: str = "confirmar|contract-1|charge-1", telefone: str = "+5581900000000"
+) -> dict:
+    """Formato real que a Meta manda quando alguém toca um quick reply de
+    Message Template (diferente de interactive/button_reply, usado só por
+    Interactive Message enviada via enviar_botoes) — ver
+    docs/whatsapp/templates-meta.md."""
+    mensagem = {
+        "id": "wamid.cliquebotao1",
+        "from": telefone,
+        "type": "button",
+        "button": {"text": "Confirmar", "payload": payload_botao},
+    }
+    return {"entry": [{"changes": [{"value": {"messages": [mensagem]}}]}]}
+
+
+def test_clique_em_quick_reply_de_template_e_reconhecido(monkeypatch):
+    """Regressão do bug relatado: botões de confirmação de pagamento
+    (notificar_fernanda_comprovante etc.) usam template com quick reply —
+    o clique chega como type='button', não 'interactive'."""
+    chamadas_roteamento = []
+
+    def fake_rotear(button_id, telefone_remetente):
+        chamadas_roteamento.append((button_id, telefone_remetente))
+        return "Pagamento confirmado."
+
+    monkeypatch.setattr(pm, "rotear_clique_botao_a2", fake_rotear)
+    enviados = _capturar_envios(monkeypatch)
+
+    resposta = pm.processar_mensagem_recebida(
+        _payload_clique_botao_template(payload_botao="confirmar|contract-1|charge-1"),
+        responder_via_whatsapp=True,
+    )
+
+    assert resposta == "Pagamento confirmado."
+    assert enviados == []  # nunca manda resposta automática pra quem clicou
+    assert chamadas_roteamento == [("confirmar|contract-1|charge-1", "+5581900000000")]
+
+
+def test_clique_interactive_button_reply_continua_funcionando(monkeypatch):
+    """Regressão: o formato antigo (Interactive Message de verdade, usado
+    por notificar_pergunta_qual_charge_paga) não pode quebrar."""
+    chamadas_roteamento = []
+
+    def fake_rotear(button_id, telefone_remetente):
+        chamadas_roteamento.append((button_id, telefone_remetente))
+        return "Confirmado, obrigado."
+
+    monkeypatch.setattr(pm, "rotear_clique_botao_a2", fake_rotear)
+
+    resposta = pm.processar_mensagem_recebida(_payload_clique(), responder_via_whatsapp=True)
+
+    assert resposta == "Confirmado, obrigado."
+    assert chamadas_roteamento == [("confirmar|contract-1|charge-1", "+5581900000000")]
+
+
 # ======================================================================
 # Regressão do dev_chat (chat simulado)
 # ======================================================================

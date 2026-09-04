@@ -25,11 +25,15 @@ Quatro tipos de mensagem tratados, cada um com seu próprio caminho:
     resolvido pelo telefone do inquilino, mas SEM passar pelo classificador
     de texto (não há texto pra classificar); vai direto pra
     rotear_comprovante_a2.
-  - "interactive" (button_reply): clique de botão da FERNANDA (staff), não
-    de um inquilino — não resolve contract_id por telefone (o telefone dela
-    não está em contracts.telefone_whatsapp), o contract_id/charge_id vêm
-    decodificados do próprio id do botão. Vai direto pra
-    rotear_clique_botao_a2, sem passar por agent_log_message.
+  - "interactive" (button_reply) OU "button" (quick reply de template):
+    clique de botão da FERNANDA (staff), não de um inquilino — não resolve
+    contract_id por telefone (o telefone dela não está em
+    contracts.telefone_whatsapp), o contract_id/charge_id vêm decodificados
+    do próprio id/payload do botão. Vai direto pra rotear_clique_botao_a2,
+    sem passar por agent_log_message. Os dois formatos existem porque a
+    Meta usa envelopes diferentes pra clique de Interactive Message
+    (enviar_botoes) vs. quick reply de Message Template (enviar_template) —
+    ver _processar_clique_botao.
 
 Roteamento de intenção real entre A1-A5 vive em app/orchestrator/orchestrator.py.
 """
@@ -121,8 +125,8 @@ def processar_mensagem_recebida(payload: dict, *, responder_via_whatsapp: bool =
         logger.exception("Payload do WhatsApp em formato inesperado, ignorando.")
         return "Erro: payload em formato inesperado (ver logs)."
 
-    if tipo_mensagem == "interactive":
-        return _processar_clique_botao(mensagem)
+    if tipo_mensagem in ("interactive", "button"):
+        return _processar_clique_botao(mensagem, tipo_mensagem)
 
     if tipo_mensagem in ("image", "document"):
         return _processar_comprovante(mensagem, responder_via_whatsapp=responder_via_whatsapp)
@@ -394,21 +398,39 @@ def _processar_audio(mensagem: dict, *, responder_via_whatsapp: bool = False) ->
     return resposta
 
 
-def _processar_clique_botao(mensagem: dict) -> Optional[str]:
+def _processar_clique_botao(mensagem: dict, tipo_mensagem: str) -> Optional[str]:
     """Clique de botão interativo — vem do telefone da FERNANDA (staff), não
     de um inquilino, então não passa por _resolver_contract_id nem por
     agent_log_message (não é mensagem de conversa de contrato, é ação
     administrativa). contract_id/charge_id vêm decodificados do próprio
-    button_id dentro de rotear_clique_botao_a2. O telefone de quem clicou
-    (`mensagem["from"]`) é repassado adiante (WA-06) só pra ação
-    ESCOLHER_PAGAMENTO_PARCIAL poder mandar a segunda pergunta de volta pra
-    ela — as demais ações ignoram esse valor."""
-    interactive = mensagem.get("interactive", {})
-    if interactive.get("type") != "button_reply":
-        logger.warning("Mensagem interactive de tipo não suportado: %r", interactive.get("type"))
-        return None
+    button_id dentro de rotear_clique_botao_a2.
 
-    button_id = interactive.get("button_reply", {}).get("id", "")
+    `tipo_mensagem` distingue os dois formatos que a Meta usa pra clique de
+    botão — são payloads DIFERENTES, não uma questão de estilo:
+      - "button": quick reply de Message Template (usado por
+        notificar_fernanda_comprovante, notificar_fernanda_pagamento_combinado
+        — ver app/agents/a2_cobranca/notificacao.py). O id do botão vem em
+        mensagem["button"]["payload"].
+      - "interactive": Interactive Message enviada via
+        whatsapp_client.enviar_botoes (usado por
+        notificar_pergunta_qual_charge_paga). O id do botão vem em
+        mensagem["interactive"]["button_reply"]["id"].
+    Os dois formatos carregam o MESMO button_id de negócio (montado por
+    montar_button_id_* em app/agents/a2_cobranca/button_ids.py) — só o
+    envelope da Meta muda.
+
+    O telefone de quem clicou (`mensagem["from"]`) é repassado adiante
+    (WA-06) só pra ação ESCOLHER_PAGAMENTO_PARCIAL poder mandar a segunda
+    pergunta de volta pra ela — as demais ações ignoram esse valor."""
+    if tipo_mensagem == "button":
+        button_id = mensagem.get("button", {}).get("payload", "")
+    else:
+        interactive = mensagem.get("interactive", {})
+        if interactive.get("type") != "button_reply":
+            logger.warning("Mensagem interactive de tipo não suportado: %r", interactive.get("type"))
+            return None
+        button_id = interactive.get("button_reply", {}).get("id", "")
+
     telefone_remetente = mensagem.get("from", "")
     return rotear_clique_botao_a2(button_id, telefone_remetente)
 
