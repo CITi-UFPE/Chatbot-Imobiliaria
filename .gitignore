@@ -39,3 +39,6 @@ htmlcov/
 
 # Dados sensíveis de clientes — nunca versionar (contratos reais, documentos com PII/LGPD)
 data/
+
+# Workspace de execução do superpowers:subagent-driven-development (ledgers, briefs, reviews)
+.superpowers/
