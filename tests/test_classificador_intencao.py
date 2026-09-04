@@ -58,3 +58,13 @@ def test_system_prompt_manda_saudacao_pura_para_a1():
     no prompt, e o destino removido não pode voltar por acidente."""
     assert "tudo bem" in clf.SYSTEM_PROMPT.lower()
     assert "SAUDACAO" not in clf.SYSTEM_PROMPT
+
+
+def test_system_prompt_orienta_conta_em_aberto_para_a1():
+    """Regressão do gap de 'existe conta em aberto pro meu apartamento?' —
+    sem exemplo explícito, essa pergunta corria risco de ser roteada errado
+    (ex: para A5, por soar como assunto financeiro) em vez de A1, que agora
+    tem a tool buscar_status_cobranca_inquilino (Migration 023) pra
+    responder isso com dado real."""
+    prompt = clf.SYSTEM_PROMPT.lower()
+    assert "conta" in prompt and "aberto" in prompt
