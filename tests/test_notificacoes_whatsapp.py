@@ -420,7 +420,7 @@ class TestNotificarStaff:
         assert telefone_staff not in caplog.text
         assert wc.mascarar_telefone(telefone_staff) in caplog.text
 
-    def test_escalonamento_usa_tres_parametros_na_ordem_meta(self, monkeypatch):
+    def test_escalonamento_usa_seis_parametros_na_ordem_meta(self, monkeypatch):
         monkeypatch.setenv("WHATSAPP_ENVIO_ATIVO", "true")
         monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "+5581988887777")
         chamadas = []
@@ -431,19 +431,51 @@ class TestNotificarStaff:
 
         monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
 
-        notif_a5.notificar_staff_escalonamento(
+        wamid = notif_a5.notificar_staff_escalonamento(
             "ESC-2026-00042",
             "pedido_humano",
             "Inquilino pediu atendimento humano.",
+            "João Pereira",
+            "Apto 305",
+            "+5581999998888",
         )
 
+        assert wamid == "wamid.ESC2"  # Migration 022: continua devolvendo o wamid pra correlação
         assert chamadas == [
             (
                 "+5581988887777",
                 "escalonamento_equipe",
-                ["ESC-2026-00042", "pedido_humano", "Inquilino pediu atendimento humano."],
+                [
+                    "ESC-2026-00042",
+                    "pedido_humano",
+                    "Inquilino pediu atendimento humano.",
+                    "João Pereira",
+                    "Apto 305",
+                    "+5581999998888",
+                ],
                 "pt_BR",
             )
+        ]
+
+    def test_escalonamento_sem_dados_do_inquilino_usa_nao_informado(self, monkeypatch):
+        """Chamador que não conseguiu buscar os dados do contrato (ver
+        executar_escalonamento) ainda assim consegue notificar — os campos
+        ficam como 'não informado' em vez de string vazia, que ficaria
+        estranho no corpo da mensagem."""
+        monkeypatch.setenv("WHATSAPP_ENVIO_ATIVO", "true")
+        monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "+5581988887777")
+        chamadas = []
+
+        def fake_enviar_template(telefone, nome, parametros, lang="pt_BR"):
+            chamadas.append(parametros)
+            return wc.ResultadoEnvio(sucesso=True, simulado=False, message_id="wamid.ESC3")
+
+        monkeypatch.setattr(wc, "enviar_template", fake_enviar_template)
+
+        notif_a5.notificar_staff_escalonamento("ESC-2026-00043", "pedido_humano", "desc")
+
+        assert chamadas == [
+            ["ESC-2026-00043", "pedido_humano", "desc", "não informado", "não informado", "não informado"]
         ]
 
 

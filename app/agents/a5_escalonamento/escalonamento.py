@@ -129,15 +129,19 @@ def avaliar_escalonamento(
 
 
 def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) -> str:
-    """Grava a escalação no banco (via RPC, com o token escopado do agente)
-    e notifica a equipe. Devolve o protocolo gerado pelo banco.
+    """Grava a escalação no banco (via RPC, com o token escopado do agente),
+    busca os dados do inquilino pra notificação ficar identificável, e
+    notifica a equipe. Devolve o protocolo gerado pelo banco.
 
     A gravação (RPC) é a fonte da verdade — o caso já está escalado, com
     protocolo válido, assim que ela retorna. Uma falha só no aviso à
     equipe (rede instável, WHATSAPP_STAFF_PHONE_NUMBER ausente etc.) por
     isso não pode derrubar o retorno do protocolo nem a resposta que o
     chamador devolve ao inquilino (avaliacao.resposta_para_inquilino) — a
-    falha é logada, não engolida, mas não propaga daqui.
+    falha é logada, não engolida, mas não propaga daqui. O mesmo vale pra
+    busca dos dados extras do inquilino (nome/imóvel/telefone): se falhar,
+    a notificação ainda sai, só sem esses 3 campos (notificar_staff_
+    escalonamento troca "" por "não informado").
 
     Migration 022: quando a notificação sai de fato (envio real ativo), o
     wamid devolvido pela Meta é gravado na escalação — é o que permite
@@ -153,8 +157,31 @@ def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) 
     ).execute()
     protocolo = resposta.data
 
+    nome_inquilino = ""
+    imovel_identificacao = ""
+    telefone_inquilino = ""
     try:
-        wamid = notificar_staff_escalonamento(str(protocolo), avaliacao.motivo, avaliacao.descricao)
+        dados_contrato = client.rpc("buscar_dados_cobranca_contrato", {}).execute().data or {}
+        nome_inquilino = dados_contrato.get("inquilino_nome") or ""
+        imovel_identificacao = dados_contrato.get("imovel_identificacao") or ""
+        telefone_inquilino = dados_contrato.get("telefone_whatsapp") or ""
+    except Exception:
+        logger.exception(
+            "Falha ao buscar dados do contrato %s para a notificação de escalonamento %s — "
+            "a notificação vai sem nome/imóvel/telefone do inquilino.",
+            contract_id,
+            protocolo,
+        )
+
+    try:
+        wamid = notificar_staff_escalonamento(
+            str(protocolo),
+            avaliacao.motivo,
+            avaliacao.descricao,
+            nome_inquilino,
+            imovel_identificacao,
+            telefone_inquilino,
+        )
     except Exception:
         logger.exception(
             "Falha ao notificar a equipe sobre o escalonamento %s (contrato %s) — "
