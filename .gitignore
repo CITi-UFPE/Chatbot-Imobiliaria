@@ -39,3 +39,13 @@ htmlcov/
 
 # Dados sensíveis de clientes — nunca versionar (contratos reais, documentos com PII/LGPD)
 data/
+
+# Workspace de execução do superpowers:subagent-driven-development (ledgers, briefs, reviews)
+.superpowers/
+
+# Planos de implementação do superpowers:writing-plans — ficam só localmente,
+# nunca versionados (mesma convenção já usada nas branches anteriores, ver
+# referências a docs/superpowers/plans/... em app/agents/a5_escalonamento/
+# notificacao.py e app/orchestrator/classificador.py, que apontam pra planos
+# que nunca estiveram no histórico do git).
+docs/superpowers/
