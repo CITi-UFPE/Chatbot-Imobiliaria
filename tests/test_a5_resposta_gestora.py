@@ -236,6 +236,16 @@ class TestEhMensagemDaStaff:
 
         assert pm._eh_mensagem_da_staff("5581988887777") is False
 
+    def test_reconhece_quando_staff_tem_nono_digito_e_remetente_nao(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "+5581988887777")
+
+        assert pm._eh_mensagem_da_staff("558188887777") is True
+
+    def test_reconhece_quando_remetente_tem_nono_digito_e_staff_nao(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "558188887777")
+
+        assert pm._eh_mensagem_da_staff("5581988887777") is True
+
 
 # ======================================================================
 # processar_mensagem.py — dispatch e _processar_resposta_staff
