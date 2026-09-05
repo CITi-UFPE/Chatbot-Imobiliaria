@@ -50,6 +50,7 @@ from app.agents.a5_escalonamento.resposta_gestora import (
     compor_resposta_inquilino,
     identificar_contrato_por_wamid,
     marcar_resolvido,
+    montar_template_resposta_gestora,
     obter_escalonamento_aberto,
 )
 from app.orchestrator.agent_auth import obter_client_agente
@@ -144,16 +145,32 @@ def _eh_mensagem_da_staff(telefone_remetente: str) -> bool:
     """Compara o telefone de quem mandou a mensagem com
     WHATSAPP_STAFF_PHONE_NUMBER — mesmo telefone que recebe as notificações
     de escalonamento/manutenção/alerta contratual (whatsapp_client.
-    telefone_staff()). Comparação só por dígitos (sem '+', espaços etc.),
-    mesma normalização usada no transporte de envio
-    (whatsapp_client._normalizar_destino). Sem a variável configurada,
-    nunca reconhece ninguém como staff — mais seguro cair no fluxo normal
-    de inquilino (que só falha se o telefone realmente não corresponder a
-    contrato nenhum) do que arriscar tratar um inquilino como staff."""
+    telefone_staff()). Sem a variável configurada, nunca reconhece ninguém
+    como staff — mais seguro cair no fluxo normal de inquilino (que só
+    falha se o telefone realmente não corresponder a contrato nenhum) do
+    que arriscar tratar um inquilino como staff.
+
+    Duas comparações, em ordem: dígitos exatos primeiro (mesma normalização
+    usada no transporte de envio, whatsapp_client._normalizar_destino); se
+    não bater, candidatos brasileiros com/sem o nono dígito
+    (gerar_candidatos_telefone_br) — mesma tolerância que
+    _resolver_contract_id já aplica pro telefone do inquilino e que
+    resolver_contrato_por_telefone/telefone_br_chave aplicam no lado do
+    banco (Migration 019). Sem essa segunda comparação, uma mensagem
+    legítima da staff cai silenciosamente no fluxo de inquilino sempre que
+    WHATSAPP_STAFF_PHONE_NUMBER e o que a Meta reporta no campo "from"
+    estiverem em formatos diferentes (com/sem o 9) mesmo sendo o mesmo
+    número de verdade — bug confirmado em produção em 2026-09-04: o reply
+    nativo da Fernanda a uma notificação de escalonamento nunca chegava em
+    _processar_resposta_staff."""
     staff = os.environ.get("WHATSAPP_STAFF_PHONE_NUMBER")
     if not staff or not telefone_remetente:
         return False
-    return _somente_digitos(telefone_remetente) == _somente_digitos(staff)
+    if _somente_digitos(telefone_remetente) == _somente_digitos(staff):
+        return True
+    candidatos_staff = set(gerar_candidatos_telefone_br(staff))
+    candidatos_remetente = set(gerar_candidatos_telefone_br(telefone_remetente))
+    return bool(candidatos_staff & candidatos_remetente)
 
 
 def _somente_digitos(telefone: str) -> str:
@@ -530,7 +547,7 @@ def _processar_resposta_staff(mensagem: dict, *, responder_via_whatsapp: bool = 
             client,
             reativa=True,
             texto=resposta_inquilino,
-            template=TEMPLATE_RETOMADA_ATENDIMENTO,
+            template=montar_template_resposta_gestora(resposta_inquilino),
         )
         enviar_saida(telefone_inquilino, saida)
     except Exception:

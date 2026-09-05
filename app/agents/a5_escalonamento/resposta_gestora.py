@@ -36,6 +36,8 @@ import os
 import anthropic
 from supabase import create_client
 
+from app.tools.whatsapp_message_policy import MensagemTemplate
+
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-5"
@@ -115,3 +117,21 @@ def marcar_resolvido(client, protocolo: str) -> bool:
         "agent_marcar_escalonamento_resolvido", {"p_protocolo": protocolo}
     ).execute()
     return bool(resposta.data)
+
+
+def montar_template_resposta_gestora(resposta_inquilino: str) -> MensagemTemplate:
+    """Template usado quando a janela de 24h com o inquilino está fechada
+    (decidir_saida_para_contrato, app/tools/whatsapp_message_policy.py).
+
+    NUNCA reaproveitar TEMPLATE_RETOMADA_ATENDIMENTO aqui: aquele template não
+    tem variável nenhuma porque foi desenhado pra fluxos onde o agente
+    recalcula a resposta quando o inquilino responder de novo (A1/A3) — a
+    resposta da gestora não é recalculável, é uma informação humana pontual.
+    Perdê-la equivale a nunca ter repassado o caso, mesmo com o escalonamento
+    marcado como resolvido logo em seguida (ver docstring do módulo).
+    """
+    return MensagemTemplate(
+        nome="resposta_gestora_fora_da_janela",
+        idioma="pt_BR",
+        parametros=(resposta_inquilino,),
+    )

@@ -21,6 +21,7 @@ from app.agents.a5_escalonamento import notificacao as notif_a5
 from app.agents.a5_escalonamento import resposta_gestora as rg
 from app.orchestrator import processar_mensagem as pm
 from app.tools import whatsapp_client as wc
+from app.tools import whatsapp_message_policy as policy
 
 # ======================================================================
 # executar_escalonamento — persistência do wamid (Migration 022)
@@ -188,6 +189,16 @@ def test_marcar_resolvido_devolve_booleano_da_rpc():
     ]
 
 
+def test_montar_template_resposta_gestora_carrega_a_resposta_como_parametro():
+    template = rg.montar_template_resposta_gestora("Sim, o apartamento tem vaga de garagem inclusa.")
+
+    assert template == policy.MensagemTemplate(
+        nome="resposta_gestora_fora_da_janela",
+        idioma="pt_BR",
+        parametros=("Sim, o apartamento tem vaga de garagem inclusa.",),
+    )
+
+
 class TestComporRespostaInquilino:
     @patch("app.agents.a5_escalonamento.resposta_gestora.anthropic.Anthropic")
     def test_usa_pergunta_e_resposta_da_gestora_no_prompt(self, mock_anthropic_cls):
@@ -235,6 +246,16 @@ class TestEhMensagemDaStaff:
         monkeypatch.delenv("WHATSAPP_STAFF_PHONE_NUMBER", raising=False)
 
         assert pm._eh_mensagem_da_staff("5581988887777") is False
+
+    def test_reconhece_quando_staff_tem_nono_digito_e_remetente_nao(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "+5581988887777")
+
+        assert pm._eh_mensagem_da_staff("558188887777") is True
+
+    def test_reconhece_quando_remetente_tem_nono_digito_e_staff_nao(self, monkeypatch):
+        monkeypatch.setenv("WHATSAPP_STAFF_PHONE_NUMBER", "558188887777")
+
+        assert pm._eh_mensagem_da_staff("5581988887777") is True
 
 
 # ======================================================================
@@ -368,10 +389,59 @@ def test_fluxo_completo_repassa_resposta_ao_inquilino_e_marca_resolvido(monkeypa
 
     assert resposta == "Não, animais de estimação não são permitidos."
     assert enviados_inquilino == [
-        ("+5581999998888", enviados_inquilino[0][1])
-    ]  # foi pro telefone do INQUILINO, não da staff
+        (
+            "+5581999998888",
+            rg.montar_template_resposta_gestora("Não, animais de estimação não são permitidos."),
+        )
+    ]  # foi pro telefone do INQUILINO, não da staff, com o conteúdo real da gestora
     assert chamadas_marcar == ["ESC-2026-00001"]
     assert chamadas_texto_staff == [("+5581988887777", "Repassado ao inquilino! (protocolo ESC-2026-00001)")]
+
+
+class _ClientJanelaFechada:
+    """Fake client cuja RPC de última mensagem do inquilino devolve None —
+    janela de 24h fechada (mesmo cenário de test_ausencia_de_historico_exige_template
+    em tests/test_whatsapp_message_policy.py). Único método usado por
+    decidir_saida_para_contrato nesse caminho."""
+
+    def rpc(self, nome, params):
+        assert nome == "agent_get_last_tenant_message_at"
+        return self
+
+    def execute(self):
+        return MagicMock(data=None)
+
+
+def test_janela_fechada_no_reply_da_gestora_preserva_o_conteudo_da_resposta(
+    monkeypatch, staff_configurada
+):
+    """Com o reconhecimento de staff já corrigido e a janela de 24h fechada,
+    a resposta da gestora não pode ser substituída pelo template genérico e
+    vazio (retomada_atendimento) — o conteúdo dela é único e não existe
+    outro jeito de recuperá-lo depois."""
+    monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: _ClientJanelaFechada())
+    monkeypatch.setattr(
+        pm, "obter_escalonamento_aberto", lambda client, wamid: dict(_ESCALONAMENTO_ABERTO)
+    )
+    monkeypatch.setattr(
+        pm,
+        "compor_resposta_inquilino",
+        lambda pergunta, resposta: "Sim, o apartamento tem vaga de garagem inclusa.",
+    )
+    monkeypatch.setattr(pm, "marcar_resolvido", lambda client, protocolo: True)
+    enviados_inquilino = []
+    monkeypatch.setattr(pm, "enviar_saida", lambda tel, saida: enviados_inquilino.append((tel, saida)))
+    monkeypatch.setattr(pm.whatsapp_client, "enviar_texto", lambda tel, txt: None)
+
+    pm.processar_mensagem_recebida(_payload_reply_staff(texto="sim"), responder_via_whatsapp=True)
+
+    assert enviados_inquilino == [
+        (
+            "+5581999998888",
+            rg.montar_template_resposta_gestora("Sim, o apartamento tem vaga de garagem inclusa."),
+        )
+    ]
 
 
 def test_falha_ao_enviar_ao_inquilino_nao_marca_resolvido(monkeypatch, staff_configurada):

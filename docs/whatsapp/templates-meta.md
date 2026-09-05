@@ -346,6 +346,39 @@ externas (mesma ressalva dos templates 8–11).
 
 ---
 
+## 13. `resposta_gestora_fora_da_janela`
+
+**Categoria:** Utility · **Idioma:** pt_BR
+
+**Corpo sugerido:**
+```
+Atualização sobre o seu atendimento:
+
+{{1}}
+
+Qualquer dúvida, é só responder por aqui.
+```
+
+**Variáveis:**
+1. Resposta da gestora ao inquilino, já composta por `compor_resposta_inquilino`
+   (`app/agents/a5_escalonamento/resposta_gestora.py`) — texto curto, sem
+   markdown pesado, nunca inventa informação além do que a gestora disse.
+
+**Exemplo:** `Sim, o apartamento tem vaga de garagem inclusa.`
+
+**Consumidor:** `app/agents/a5_escalonamento/resposta_gestora.py::montar_template_resposta_gestora`,
+usado por `app/orchestrator/processar_mensagem.py::_processar_resposta_staff`
+quando `decidir_saida_para_contrato` (WA-08) determina que a janela de 24h
+com o inquilino está fechada. Diferente de `retomada_atendimento` (seção 8),
+este template carrega o conteúdo real — a resposta da gestora é uma
+informação humana pontual, não recalculável depois pelo agente.
+
+**Status operacional:** consumido pelo código, mas sem cadastro, submissão
+ou aprovação presumidos na Meta. A ativação real depende dessas etapas
+externas (mesma ressalva dos templates 8–12).
+
+---
+
 ## Resumo — variável de ambiente de destino por template
 
 | Template | Destinatário | Variável de ambiente |
@@ -356,6 +389,7 @@ externas (mesma ressalva dos templates 8–11).
 | `escalonamento_equipe` | Equipe | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `manutencao_equipe` | Equipe | `WHATSAPP_STAFF_PHONE_NUMBER` |
 | `retomada_atendimento`, `pagamento_confirmado` | Inquilino | `contrato.telefone_whatsapp` |
+| `resposta_gestora_fora_da_janela` | Inquilino | `contrato.telefone_whatsapp` |
 
 ---
 
