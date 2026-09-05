@@ -367,6 +367,26 @@ O chamado aguarda acompanhamento da equipe.
 
 ---
 
+## 13. `resposta_gestora_fora_da_janela`
+
+**Corpo:**
+
+```text
+Atualização sobre o seu atendimento:
+
+{{1}}
+
+Qualquer dúvida, é só responder por aqui.
+```
+
+**Variáveis, na ordem:**
+
+1. Resposta da gestora, já composta pelo backend — `Sim, o apartamento tem vaga de garagem inclusa.`
+
+**Botões:** nenhum.
+
+---
+
 ## Checklist de submissão
 
 Preencha depois de cada cadastro no painel:
@@ -385,6 +405,7 @@ Preencha depois de cada cadastro no painel:
 | `alerta_contratual` | Utility | pt_BR | 0 | A confirmar | |
 | `escalonamento_equipe` | Utility | pt_BR | 0 | A confirmar | |
 | `manutencao_equipe` | Utility | pt_BR | 0 | A confirmar | |
+| `resposta_gestora_fora_da_janela` | Utility | pt_BR | 0 | A confirmar | |
 
 ## Depois da aprovação
 

@@ -50,6 +50,7 @@ from app.agents.a5_escalonamento.resposta_gestora import (
     compor_resposta_inquilino,
     identificar_contrato_por_wamid,
     marcar_resolvido,
+    montar_template_resposta_gestora,
     obter_escalonamento_aberto,
 )
 from app.orchestrator.agent_auth import obter_client_agente
@@ -546,7 +547,7 @@ def _processar_resposta_staff(mensagem: dict, *, responder_via_whatsapp: bool = 
             client,
             reativa=True,
             texto=resposta_inquilino,
-            template=TEMPLATE_RETOMADA_ATENDIMENTO,
+            template=montar_template_resposta_gestora(resposta_inquilino),
         )
         enviar_saida(telefone_inquilino, saida)
     except Exception:
