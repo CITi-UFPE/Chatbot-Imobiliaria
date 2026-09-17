@@ -68,6 +68,11 @@ class DadosInquilino(BaseModel):
     vencimento_mes_referencia: Literal["atual", "anterior"]
     data_inicio: str
     data_termino: str
+    # Migration 013 criou a coluna, Migration 024 é que passou a devolvê-la
+    # aqui — até então o A1 não tinha como saber que data_termino, para um
+    # contrato renovado por inércia, é só um valor histórico (ver
+    # docs/schemas/024_prazo_indeterminado_no_a1.sql).
+    prazo_indeterminado: bool = False
     indice_reajuste: Optional[Literal["igpm", "ipca", "livre_negociacao"]] = None
     data_aniversario_reajuste: Optional[str] = None
     garantia_tipo: Literal["fiador", "caucao", "aluguel_antecipado"]
