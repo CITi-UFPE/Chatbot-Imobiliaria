@@ -139,6 +139,8 @@ class TestRotearParaA5ComCriterio:
 
         resposta, agente = orch.rotear_mensagem("contract-1", "quero falar com o Domingos")
 
-        assert resposta == "Já encaminhei seu caso para a equipe. (protocolo ESC-2026-00001)"
+        # O protocolo é interno (log + notificação à equipe) — o inquilino
+        # nunca deve ver "(protocolo ESC-...)" colado na resposta humana.
+        assert resposta == "Já encaminhei seu caso para a equipe."
         assert agente == "A5"
         assert chamou_a1 == []  # não delega pro A1 quando de fato escalou
