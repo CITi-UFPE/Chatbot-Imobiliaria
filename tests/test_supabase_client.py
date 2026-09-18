@@ -20,6 +20,7 @@ def _classificacao(**overrides) -> ClassificacaoManutencao:
         "justificativa": "Vazamento grande relatado.",
         "categoria_confidence": 0.95,
         "urgencia_confidence": 0.95,
+        "descricao_formatada": "Vazamento grande relatado.",
     }
     base.update(overrides)
     return ClassificacaoManutencao(**base)

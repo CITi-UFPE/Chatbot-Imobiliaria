@@ -19,6 +19,7 @@ def _classificacao(**overrides) -> ClassificacaoManutencao:
         "justificativa": "Torneira pingando.",
         "categoria_confidence": 0.95,
         "urgencia_confidence": 0.9,
+        "descricao_formatada": "Torneira pingando.",
     }
     base.update(overrides)
     return ClassificacaoManutencao(**base)
@@ -245,6 +246,109 @@ def test_confianca_ainda_baixa_apos_esclarecimento_marca_incerteza_e_nao_rebaixa
     assert r2.ticket.classificacao_incerta is True
     # Nunca subestima: mesmo a reclassificação tendo saído "baixa", mantém "alta".
     assert tickets_abertos[0].urgencia == "alta"
+
+
+def test_confusao_durante_esclarecimento_nao_fecha_ticket_e_pergunta_de_novo():
+    """Regressão de bug real reportado em teste manual: 'hein?' (ou qualquer
+    interjeição de confusão) durante o esclarecimento estava sendo tratado
+    como se fosse a resposta à pergunta — fechava o ticket na hora, com
+    "hein?" colado na descrição. Agora repete a pergunta em vez de
+    reclassificar/fechar com ruído."""
+    estado = EstadoAtendimentoManutencao(etapa="aguardando_descricao")
+    classificacao_ambigua = _classificacao(categoria_confidence=0.4, urgencia_confidence=0.4)
+
+    r1 = processar_turno(
+        estado,
+        "tem uma mancha esquisita perto do chuveiro",
+        imovel_endereco=IMOVEL_ENDERECO,
+        imovel_numero=IMOVEL_NUMERO,
+        abrir_ticket_fn=_abrir_ticket_fake,
+        criar_escalonamento_fn=RegistroEscalonamento(),
+        classificar_fn=lambda descricao: classificacao_ambigua,
+        gerar_pergunta_fn=lambda descricao, classificacao: "Está úmida ou é marca seca?",
+    )
+    assert r1.estado.etapa == "aguardando_esclarecimento"
+
+    def _reclassificar_nao_deveria_ser_chamado(descricao):
+        raise AssertionError("'hein?' não deveria disparar reclassificação/fechamento do ticket")
+
+    r2 = processar_turno(
+        r1.estado,
+        "hein?",
+        imovel_endereco=IMOVEL_ENDERECO,
+        imovel_numero=IMOVEL_NUMERO,
+        abrir_ticket_fn=_abrir_ticket_fake,
+        criar_escalonamento_fn=RegistroEscalonamento(),
+        classificar_fn=_reclassificar_nao_deveria_ser_chamado,
+        gerar_pergunta_fn=lambda descricao, classificacao: "Está úmida ou é marca seca?",
+    )
+
+    assert r2.estado.etapa == "aguardando_esclarecimento"
+    assert r2.ticket is None
+    assert r2.estado.tentativas_esclarecimento == 1
+    assert "úmida" in r2.resposta_inquilino
+
+    r3 = processar_turno(
+        r2.estado,
+        "é uma mancha seca, tipo mofo",
+        imovel_endereco=IMOVEL_ENDERECO,
+        imovel_numero=IMOVEL_NUMERO,
+        abrir_ticket_fn=_abrir_ticket_fake,
+        criar_escalonamento_fn=RegistroEscalonamento(),
+        classificar_fn=lambda descricao: _classificacao(categoria_confidence=0.9, urgencia_confidence=0.9),
+    )
+    assert r3.estado.etapa == "finalizado"
+    assert r3.ticket is not None
+
+
+def test_confusao_repetida_desiste_e_abre_ticket_incerto():
+    """Não pode entrar em loop infinito se a pessoa nunca responder de
+    verdade — depois de MAX_TENTATIVAS_ESCLARECIMENTO confusões seguidas,
+    abre o ticket mesmo assim (marcado incerto), igual ao caso de resposta
+    ambígua de verdade."""
+    estado = EstadoAtendimentoManutencao(
+        etapa="aguardando_esclarecimento",
+        tentativas_esclarecimento=1,
+        descricao_livre="tem uma mancha esquisita perto do chuveiro",
+        classificacao_inicial=_classificacao(categoria_confidence=0.4, urgencia_confidence=0.4),
+    )
+
+    resultado = processar_turno(
+        estado,
+        "hein?",
+        imovel_endereco=IMOVEL_ENDERECO,
+        imovel_numero=IMOVEL_NUMERO,
+        abrir_ticket_fn=_abrir_ticket_fake,
+        criar_escalonamento_fn=RegistroEscalonamento(),
+        classificar_fn=lambda descricao: _classificacao(categoria_confidence=0.4, urgencia_confidence=0.4),
+    )
+
+    assert resultado.estado.etapa == "finalizado"
+    assert resultado.ticket is not None
+    assert resultado.ticket.classificacao_incerta is True
+
+
+def test_ticket_usa_descricao_formatada_em_vez_do_texto_bruto():
+    """Regressão: o ticket (e a notificação da equipe) usam a descrição já
+    limpa pela classificação (descricao_formatada), não o texto bruto do
+    inquilino — que ficava feio/concatenado quando vinha em várias
+    mensagens (ex: 'tem uma mancha esquisita perto do chuveiro hein?')."""
+    estado = EstadoAtendimentoManutencao(etapa="aguardando_descricao")
+
+    resultado = processar_turno(
+        estado,
+        "a torneira da cozinha ta pingando direto seguidamente",
+        imovel_endereco=IMOVEL_ENDERECO,
+        imovel_numero=IMOVEL_NUMERO,
+        abrir_ticket_fn=_abrir_ticket_fake,
+        criar_escalonamento_fn=RegistroEscalonamento(),
+        classificar_fn=lambda descricao: _classificacao(
+            descricao_formatada="Torneira da cozinha pingando continuamente."
+        ),
+    )
+
+    assert resultado.ticket.descricao == "Torneira da cozinha pingando continuamente."
+    assert resultado.notificacao_gestora_parametros[-1] == "Torneira da cozinha pingando continuamente."
 
 
 def test_mensagem_apos_finalizado_nao_reabre_fluxo():
