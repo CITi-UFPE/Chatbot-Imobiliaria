@@ -33,7 +33,11 @@ SYSTEM_PROMPT = (
     "exposta, porta/fechadura quebrada), media (afeta o uso mas sem risco — ex: chuveiro não "
     "esquenta, torneira pingando), baixa (estético — ex: pintura descascando, rejunte). "
     "Urgência ALTA exige risco explícito de segurança/dano ao imóvel, não apenas a categoria. "
-    "Na dúvida entre dois níveis de urgência, classifique como o nível mais alto plausível."
+    "Na dúvida entre dois níveis de urgência, classifique como o nível mais alto plausível. "
+    "Também produza 'descricao_formatada': o relato reescrito como uma frase objetiva, sem "
+    "ruído (saudação, 'hein?', repetição de mensagens anteriores) e sem inventar nada — isso vai "
+    "direto pro chamado que a equipe vê, então precisa estar limpo mesmo que o relato original "
+    "tenha vindo picado em várias mensagens."
 )
 
 TOOL_NAME = "classificar_manutencao"

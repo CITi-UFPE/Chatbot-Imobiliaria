@@ -14,6 +14,7 @@ def _classificacao_valida(**overrides):
         "justificativa": "Torneira pingando, sem risco.",
         "categoria_confidence": 0.95,
         "urgencia_confidence": 0.9,
+        "descricao_formatada": "Torneira pingando.",
     }
     base.update(overrides)
     return base

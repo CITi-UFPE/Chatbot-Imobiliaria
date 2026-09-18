@@ -19,6 +19,20 @@ CONFIDENCE_MINIMA_URGENCIA = 0.7
 
 MAX_TENTATIVAS_IDENTIFICACAO = 2
 
+# Quantas vezes o A3 aceita uma resposta de "confusão" (ex: "hein?", "oi",
+# "?") durante o esclarecimento antes de desistir e abrir o ticket incerto
+# mesmo assim — evita loop infinito se a pessoa nunca responder de verdade,
+# mas dá pelo menos uma chance real antes de finalizar num mal-entendido.
+MAX_TENTATIVAS_ESCLARECIMENTO = 2
+
+# Só casa quando a mensagem INTEIRA (depois de tirar pontuação/espaço) é uma
+# dessas interjeições — nunca quando uma delas aparece dentro de uma frase de
+# verdade (ex: "oi, deixa eu explicar melhor" não é ruído, tem conteúdo).
+_MARCADORES_CONFUSAO = {
+    "hein", "oi", "ola", "que", "quê", "como", "como assim", "o que",
+    "nao entendi", "não entendi", "oq", "hum", "hm", "?",
+}
+
 _ORDEM_URGENCIA: dict[UrgenciaManutencao, int] = {"baixa": 0, "media": 1, "alta": 2}
 
 # contem_palavra normaliza acento/caixa e casa só palavra inteira (evita
@@ -46,6 +60,7 @@ CriarEscalonamentoFn = Callable[[str, str], None]
 class EstadoAtendimentoManutencao(BaseModel):
     etapa: EtapaAtendimento = "aguardando_confirmacao_imovel"
     tentativas_identificacao: int = 0
+    tentativas_esclarecimento: int = 0
     descricao_livre: str = ""
     classificacao_inicial: Optional[ClassificacaoManutencao] = None
 
@@ -81,6 +96,11 @@ def _confianca_baixa(classificacao: ClassificacaoManutencao) -> bool:
         classificacao.categoria_confidence < CONFIDENCE_MINIMA_CATEGORIA
         or classificacao.urgencia_confidence < CONFIDENCE_MINIMA_URGENCIA
     )
+
+
+def _parece_confusao(mensagem: str) -> bool:
+    normalizado = mensagem.strip().lower().rstrip("?!. ")
+    return normalizado in _MARCADORES_CONFUSAO or len(normalizado) <= 2
 
 
 def _abrir_ticket_e_notificar(
@@ -166,10 +186,28 @@ def processar_turno(
             )
 
         return _abrir_ticket_e_notificar(
-            estado, classificacao, mensagem, imovel_endereco, imovel_numero, abrir_ticket_fn
+            estado, classificacao, classificacao.descricao_formatada, imovel_endereco, imovel_numero, abrir_ticket_fn
         )
 
     if estado.etapa == "aguardando_esclarecimento":
+        tentativas = estado.tentativas_esclarecimento + 1
+
+        # "hein?", "oi", "?" — não é uma tentativa de responder a pergunta de
+        # esclarecimento, é confusão/mensagem fora de contexto. Repete a
+        # mesma pergunta em vez de fechar o ticket com isso colado na
+        # descrição (bug real: virava "tem uma mancha esquisita perto do
+        # chuveiro hein?" no chamado). Limitado por MAX_TENTATIVAS_ESCLARECIMENTO
+        # pra não entrar em loop se a pessoa nunca responder de verdade.
+        if (
+            _parece_confusao(mensagem)
+            and tentativas < MAX_TENTATIVAS_ESCLARECIMENTO
+            and estado.classificacao_inicial is not None
+        ):
+            return ResultadoTurno(
+                estado=estado.model_copy(update={"tentativas_esclarecimento": tentativas}),
+                resposta_inquilino=gerar_pergunta_fn(estado.descricao_livre, estado.classificacao_inicial),
+            )
+
         descricao_combinada = f"{estado.descricao_livre} {mensagem}".strip()
         reclassificacao = classificar_fn(descricao_combinada)
 
@@ -185,7 +223,7 @@ def processar_turno(
         return _abrir_ticket_e_notificar(
             estado,
             classificacao_final,
-            descricao_combinada,
+            classificacao_final.descricao_formatada,
             imovel_endereco,
             imovel_numero,
             abrir_ticket_fn,

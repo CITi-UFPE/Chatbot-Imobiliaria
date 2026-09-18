@@ -26,6 +26,13 @@ class ClassificacaoManutencao(BaseModel):
     justificativa: str = Field(
         description="Explicação curta de por que essa categoria e urgência foram escolhidas."
     )
+    descricao_formatada: str = Field(
+        description="O relato do inquilino reescrito como uma frase objetiva e bem formatada, "
+        "em português, pra aparecer no chamado e na notificação da equipe — SEM ruído (saudação, "
+        "interjeição tipo 'hein?', repetição) e sem inventar nenhum detalhe que o inquilino não "
+        "mencionou. Ex: relato 'a torneira da cozinha esta pingando direto' vira 'Torneira da "
+        "cozinha pingando de forma contínua.'."
+    )
     categoria_confidence: float = Field(
         ge=0, le=1, description="Confiança do modelo na categoria escolhida, de 0 a 1."
     )
