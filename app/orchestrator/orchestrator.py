@@ -248,7 +248,17 @@ def _rotear_para_a5(contract_id: str, texto: str, historico_conversa: str) -> tu
         protocolo = executar_escalonamento(contract_id, avaliacao)
         if avaliacao.motivo == "desconto_renegociacao":
             pausar_charges_em_negociacao(contract_id)
-        return f"{avaliacao.resposta_para_inquilino} (protocolo {protocolo})", "A5"
+        # O protocolo é interno (fica em `escalations.protocolo`, e a
+        # equipe já recebe ele na notificação — ver notificacao.py). O
+        # inquilino não tem o que fazer com um código de protocolo e não
+        # deve ver isso na conversa — só a resposta humana mesmo.
+        logger.info(
+            "Contrato %s: A5 escalou (motivo=%s, protocolo=%s).",
+            contract_id,
+            avaliacao.motivo,
+            protocolo,
+        )
+        return avaliacao.resposta_para_inquilino, "A5"
 
     logger.info(
         "Contrato %s: classificado para A5 mas avaliar_escalonamento não encontrou "
