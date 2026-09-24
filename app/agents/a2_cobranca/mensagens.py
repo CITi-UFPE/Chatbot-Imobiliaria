@@ -25,6 +25,7 @@ charges.mensagem_estagio só aceita literalmente 'd-5' no CHECK constraint
 """
 
 from app.agents.a2_cobranca.schemas import ChargeAtiva, DadosCobrancaContrato, EstagioCobranca
+from app.tools.encargos_atraso import calcular_encargos
 from app.tools.whatsapp_message_policy import MensagemTemplate
 
 # Generalização de propósito: hoje só 'agua' é um tipo válido em
@@ -40,24 +41,6 @@ ROTULOS_CONTA: dict[str, str] = {
 
 def _rotulo_conta(tipo: str) -> str:
     return ROTULOS_CONTA.get(tipo, "conta")
-
-
-def _calcular_encargos(
-    valor_esperado: float,
-    dias_atraso: int,
-    multa_moratoria_percentual: float | None,
-    juros_moratorio_mensal: float,
-) -> tuple[float, float, float]:
-    """Multa é flat (não proporcional aos dias); juros é prorateado por dia
-    num mês de 30 dias — convenção assumida, não especificada na doc.
-    multa_moratoria_percentual é fração (0.02 = 2%), não percentual inteiro
-    — ver nota de unidade em Migration 011, ainda não validada contra dado
-    real."""
-    percentual_multa = multa_moratoria_percentual or 0.0
-    valor_multa = valor_esperado * percentual_multa
-    valor_juros = valor_esperado * juros_moratorio_mensal * (dias_atraso / 30)
-    valor_total = valor_esperado + valor_multa + valor_juros
-    return round(valor_multa, 2), round(valor_juros, 2), round(valor_total, 2)
 
 
 def _montar_mensagem_aluguel(
@@ -83,7 +66,7 @@ def _montar_mensagem_aluguel(
             f"Assim que fizer o pagamento, envie o comprovante por aqui."
         )
 
-    valor_multa, valor_juros, valor_total = _calcular_encargos(
+    valor_multa, valor_juros, valor_total = calcular_encargos(
         charge.valor_esperado, dias_atraso, dados.multa_moratoria_percentual, dados.juros_moratorio_mensal
     )
 
@@ -153,7 +136,7 @@ def _montar_mensagem_conta(
             f"Assim que pagar, envie o comprovante por aqui."
         )
 
-    valor_multa, valor_juros, valor_total = _calcular_encargos(
+    valor_multa, valor_juros, valor_total = calcular_encargos(
         charge.valor_esperado, dias_atraso, dados.multa_moratoria_percentual, dados.juros_moratorio_mensal
     )
 
@@ -225,7 +208,7 @@ def montar_template_cobranca(
             parametros=(nome, descricao, vencimento),
         )
 
-    valor_multa, valor_juros, valor_total = _calcular_encargos(
+    valor_multa, valor_juros, valor_total = calcular_encargos(
         charge.valor_esperado,
         dias_atraso,
         dados.multa_moratoria_percentual,

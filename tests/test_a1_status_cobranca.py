@@ -205,3 +205,114 @@ def test_tools_schema_registra_buscar_status_cobranca():
     nomes = {t["name"] for t in atendimento._tools_schema()}
     assert atendimento.TOOL_BUSCAR_STATUS_COBRANCA in nomes
     assert atendimento.TOOL_BUSCAR_STATUS_COBRANCA == "buscar_status_cobranca_inquilino"
+
+
+# --- encargos (multa/juros) nas cobranças atrasadas -----------------------
+
+
+def _charge_aberta(status: str, dias_atraso: int, charge_id: str = "c1") -> dict:
+    return {
+        "charge_id": charge_id,
+        "tipo": "aluguel",
+        "mes_referencia": "2026-08-01",
+        "valor_esperado": 4300.0,
+        "data_vencimento": "2026-08-23",
+        "dias_atraso": dias_atraso,
+        "status": status,
+    }
+
+
+def _client_fake_por_rpc(status_cobranca: dict, dados_inquilino) -> MagicMock:
+    """Fake que devolve um retorno diferente por RPC — a tool de status
+    também consulta buscar_dados_inquilino pra ler multa/juros do contrato."""
+    client = MagicMock()
+
+    def _rpc(nome, _params):
+        chamada = MagicMock()
+        if nome == "buscar_dados_inquilino" and isinstance(dados_inquilino, Exception):
+            chamada.execute.side_effect = dados_inquilino
+            return chamada
+        resposta = MagicMock()
+        resposta.data = status_cobranca if nome == "buscar_status_cobranca_inquilino" else dados_inquilino
+        chamada.execute.return_value = resposta
+        return chamada
+
+    client.rpc.side_effect = _rpc
+    return client
+
+
+def _executar_com(client: MagicMock) -> dict:
+    with patch(
+        "app.agents.a1_atendimento.atendimento.obter_client_agente",
+        return_value=client,
+    ):
+        return atendimento._executar_buscar_status_cobranca(CONTRACT_ID_FAKE)
+
+
+def test_charge_atrasada_recebe_valor_atualizado_com_multa_e_juros():
+    """Regressão: o A1 informava 'atrasada há 32 dias' só com o valor
+    original, sem os encargos que o cron do A2 mostra nas mensagens."""
+    client = _client_fake_por_rpc(
+        {"charges_abertas": [_charge_aberta("atrasado", 32)], "charges_pagas_ultimos_30_dias": []},
+        {"multa_moratoria_percentual": 0.02, "juros_moratorio_mensal": 0.01},
+    )
+
+    charge = _executar_com(client)["charges_abertas"][0]
+
+    assert charge["valor_multa"] == 86.0
+    assert charge["valor_juros"] == 45.87
+    assert charge["valor_atualizado"] == 4431.87
+
+
+def test_charge_pendente_e_em_negociacao_nao_recebem_encargos():
+    """Pendente ainda está no prazo; em negociação pode ter multa perdoada —
+    em nenhum dos dois o A1 deve apresentar um valor com encargos."""
+    client = _client_fake_por_rpc(
+        {
+            "charges_abertas": [
+                _charge_aberta("pendente", 0, "c1"),
+                _charge_aberta("em_negociacao", 20, "c2"),
+            ],
+            "charges_pagas_ultimos_30_dias": [],
+        },
+        {"multa_moratoria_percentual": 0.02, "juros_moratorio_mensal": 0.01},
+    )
+
+    abertas = _executar_com(client)["charges_abertas"]
+
+    for charge in abertas:
+        assert "valor_atualizado" not in charge
+    # sem nenhuma charge atrasada, nem precisa buscar os dados do contrato
+    nomes_rpc = [c.args[0] for c in client.rpc.call_args_list]
+    assert "buscar_dados_inquilino" not in nomes_rpc
+
+
+def test_multa_nula_no_contrato_calcula_so_juros():
+    client = _client_fake_por_rpc(
+        {"charges_abertas": [_charge_aberta("atrasado", 30)], "charges_pagas_ultimos_30_dias": []},
+        {"multa_moratoria_percentual": None, "juros_moratorio_mensal": 0.01},
+    )
+
+    charge = _executar_com(client)["charges_abertas"][0]
+
+    assert charge["valor_multa"] == 0.0
+    assert charge["valor_juros"] == 43.0
+    assert charge["valor_atualizado"] == 4343.0
+
+
+def test_falha_ao_buscar_encargos_nao_derruba_a_tool():
+    """Se a leitura de multa/juros falhar, o inquilino ainda recebe o status
+    das cobranças — só sem o valor atualizado."""
+    client = _client_fake_por_rpc(
+        {"charges_abertas": [_charge_aberta("atrasado", 32)], "charges_pagas_ultimos_30_dias": []},
+        RuntimeError("rede instável"),
+    )
+
+    charge = _executar_com(client)["charges_abertas"][0]
+
+    assert charge["status"] == "atrasado"
+    assert "valor_atualizado" not in charge
+
+
+def test_system_prompt_orienta_informar_valor_atualizado():
+    assert "valor_atualizado" in atendimento.SYSTEM_PROMPT

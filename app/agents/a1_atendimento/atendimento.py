@@ -50,6 +50,7 @@ from app.agents.a1_atendimento.schemas import (
     StatusCobrancaContrato,
 )
 from app.tools.calculo_reajuste import INDICES_COM_CALCULO_AUTOMATICO, proximo_aniversario_contrato
+from app.tools.encargos_atraso import calcular_encargos
 from app.agents.a5_escalonamento import (
     AvaliacaoEscalonamento,
     avaliar_escalonamento,
@@ -189,8 +190,9 @@ desse dado).
 
 ## CONTAS EM ABERTO E HISTÓRICO DE PAGAMENTO (últimos 30 dias)
 Se o inquilino perguntar se existe alguma conta/cobrança em aberto, pendente ou atrasada,
-ou sobre o status de um pagamento recente (ex: "tem alguma conta em aberto?", "já caiu meu
-pagamento?", "paguei a água, já confirmou?"), chame a tool 'buscar_status_cobranca_inquilino'.
+ou sobre o status de um pagamento recente (ex: "tem alguma conta em aberto?", "quais são
+minhas faturas?", "quanto estou devendo?", "já caiu meu pagamento?", "paguei a água, já
+confirmou?"), chame a tool 'buscar_status_cobranca_inquilino'.
 
 'charges_abertas' são cobranças que AINDA precisam de atenção. Explique o status de cada
 uma em linguagem simples e curta, NUNCA cite o valor cru do campo 'status':
@@ -202,6 +204,14 @@ uma em linguagem simples e curta, NUNCA cite o valor cru do campo 'status':
 - em_negociacao: está em negociação com a equipe, fora do fluxo automático.
 Se 'charges_abertas' vier vazia, diga claramente que não há nenhuma conta em aberto no
 momento.
+
+Cobranças atrasadas vêm com 'valor_multa', 'valor_juros' e 'valor_atualizado' já
+calculados (mesma conta das mensagens de cobrança). Informe o valor atualizado junto com
+o valor original, a multa e os juros dos dias de atraso, deixando claro que é o valor de
+hoje e que os juros continuam correndo até o pagamento. Não refaça essa conta você mesmo.
+Se esses campos não vierem numa cobrança atrasada, informe só o valor original e diga que
+multa e juros por atraso se aplicam conforme o contrato, sem inventar um número. Para
+cobranças em negociação, não fale em multa/juros — isso está sendo tratado pela equipe.
 
 'charges_pagas_ultimos_30_dias' cobre APENAS cobranças com pagamento identificado nos
 ÚLTIMOS 30 DIAS — NÃO é o histórico completo de pagamentos. Se o inquilino pedir um
@@ -278,9 +288,11 @@ def _tools_schema() -> list[dict]:
             "description": (
                 "Busca as cobranças (aluguel/água) do contrato desta conversa que ainda "
                 "não estão pagas/confirmadas ('charges_abertas', com status e dias de "
-                "atraso), e as cobranças com pagamento identificado nos ÚLTIMOS 30 DIAS "
+                "atraso — as atrasadas trazem também multa, juros e valor atualizado), e "
+                "as cobranças com pagamento identificado nos ÚLTIMOS 30 DIAS "
                 "('charges_pagas_ultimos_30_dias'). Chame quando o inquilino perguntar se "
-                "tem alguma conta/cobrança em aberto, o status de um pagamento, ou se um "
+                "tem alguma conta/cobrança/fatura em aberto, quanto está devendo, o status "
+                "de um pagamento, ou se um "
                 "pagamento recente já foi identificado. NÃO é histórico completo — "
                 "pagamentos com mais de 30 dias não aparecem aqui. O contrato já está "
                 "fixado pela sessão atual; não é possível buscar dados de outro contrato "
@@ -374,7 +386,49 @@ def _executar_buscar_status_cobranca(contract_id: str) -> dict:
     # avisar aqui, isso deve quebrar aqui de forma explícita.
     StatusCobrancaContrato.model_validate(dados)
 
+    _adicionar_encargos_charges_atrasadas(client, contract_id, dados["charges_abertas"])
+
     return dados
+
+
+def _adicionar_encargos_charges_atrasadas(client, contract_id: str, charges_abertas: list[dict]) -> None:
+    """Acrescenta valor_multa/valor_juros/valor_atualizado nas charges
+    'atrasado' — mesma fórmula das mensagens do cron do A2 (ver
+    app/tools/encargos_atraso.py), pra o A1 não informar só o valor original
+    de uma cobrança que o inquilino já recebeu com encargos no WhatsApp.
+
+    Não entra 'em_negociacao' (a negociação pode perdoar multa/juros) nem
+    'pendente'. Os campos são acrescentados DEPOIS da validação Pydantic,
+    então não mudam o contrato da RPC. Falha ao ler multa/juros do contrato
+    não derruba a tool: o inquilino ainda recebe o status das cobranças."""
+    atrasadas = [c for c in charges_abertas if c["status"] == "atrasado" and c["dias_atraso"] > 0]
+    if not atrasadas:
+        return
+
+    try:
+        contrato = client.rpc("buscar_dados_inquilino", {}).execute().data or {}
+    except Exception:
+        logger.exception(
+            "Falha ao buscar multa/juros do contrato %s — status de cobrança vai sem "
+            "valor atualizado.",
+            contract_id,
+        )
+        return
+
+    juros_moratorio_mensal = contrato.get("juros_moratorio_mensal")
+    if juros_moratorio_mensal is None:
+        juros_moratorio_mensal = 0.01  # default da coluna (Migration 001)
+
+    for charge in atrasadas:
+        valor_multa, valor_juros, valor_atualizado = calcular_encargos(
+            charge["valor_esperado"],
+            charge["dias_atraso"],
+            contrato.get("multa_moratoria_percentual"),
+            juros_moratorio_mensal,
+        )
+        charge["valor_multa"] = valor_multa
+        charge["valor_juros"] = valor_juros
+        charge["valor_atualizado"] = valor_atualizado
 
 
 def responder_inquilino(
