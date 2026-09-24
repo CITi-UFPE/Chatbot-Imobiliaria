@@ -83,3 +83,18 @@ class ComprovanteExtraido(BaseModel):
     observacoes: Optional[str] = Field(
         default=None, description="Qualquer ambiguidade ou detalhe relevante encontrado na leitura."
     )
+
+
+class ContratoFaturamento(BaseModel):
+    """Uma linha de cron_listar_contratos_para_faturamento (Migration 025) —
+    só os campos de calendário que a geração de charge de aluguel precisa.
+    Sem valor nem dado pessoal: o valor é lido pela própria RPC de insert."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    dia_vencimento: int = Field(ge=1, le=31)
+    vencimento_mes_referencia: Literal["atual", "anterior"]
+    data_inicio: date
+    data_termino: date
+    prazo_indeterminado: bool = False
