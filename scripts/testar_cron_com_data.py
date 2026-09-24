@@ -4,8 +4,8 @@ D+15 (A2) ou D-60/D-30 (A4) sem precisar esperar a data real bater com o
 vencimento de uma charge/contrato de teste.
 
 Não manda nada de verdade pro WhatsApp (sem WHATSAPP_ACCESS_TOKEN, só
-loga) — mas ESCREVE de verdade no banco (marca charge/alerta como
-disparado, idempotente por dia). Rodar só contra dados de teste.
+loga) — mas ESCREVE de verdade no banco (no A2 cria as charges de aluguel
+da janela e marca charge/alerta como disparado, idempotente por dia). Rodar só contra dados de teste.
 
 Uso (a partir da RAIZ do repo — precisa ser -m, não o caminho do arquivo
 direto, senão o Python não acha o pacote `app`):
@@ -49,8 +49,11 @@ def main() -> None:
     hoje = date.fromisoformat(sys.argv[2])
 
     if agente == "a2":
-        from app.agents.a2_cobranca import executar_cobranca_diaria
+        from app.agents.a2_cobranca import executar_cobranca_diaria, gerar_charges_aluguel
 
+        print(f"Gerando charges de aluguel (A2) fingindo hoje = {hoje}...")
+        geradas = gerar_charges_aluguel(hoje=hoje)
+        print(f"Charges de aluguel novas: {geradas}")
         print(f"Rodando cron de cobrança (A2) fingindo hoje = {hoje}...")
         executar_cobranca_diaria(hoje=hoje)
     else:
