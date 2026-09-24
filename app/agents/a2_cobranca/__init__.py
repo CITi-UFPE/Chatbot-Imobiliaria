@@ -1,4 +1,5 @@
 from app.agents.a2_cobranca.cobranca import executar_cobranca_diaria, pausar_charges_em_negociacao
+from app.agents.a2_cobranca.geracao import gerar_charges_aluguel
 from app.agents.a2_cobranca.comprovante import (
     confirmar_pagamento,
     confirmar_pagamento_combinado,
@@ -8,7 +9,7 @@ from app.agents.a2_cobranca.comprovante import (
     processar_comprovante_recebido,
 )
 from app.agents.a2_cobranca.orquestrador_a2 import EntradaA2, TipoEntradaA2, processar_entrada_a2
-from app.agents.a2_cobranca.schemas import ChargeAtiva, ComprovanteExtraido, DadosCobrancaContrato
+from app.agents.a2_cobranca.schemas import ChargeAtiva, ComprovanteExtraido, ContratoFaturamento, DadosCobrancaContrato
 
 __all__ = [
     # Ponto de entrada recomendado pro orquestrador geral chamar:
@@ -18,6 +19,7 @@ __all__ = [
     # Cron (chamado direto por app/jobs/cron_cobranca_diaria.py, não pelo
     # orquestrador de mensagens):
     "executar_cobranca_diaria",
+    "gerar_charges_aluguel",
     # API pública pra outros agentes (hoje: orchestrator) pausarem cobrança durante
     # negociação — ver docstring em cobranca.py:pausar_charges_em_negociacao
     "pausar_charges_em_negociacao",
@@ -30,6 +32,7 @@ __all__ = [
     "iniciar_escolha_pagamento_parcial",
     "marcar_apenas_uma_paga",
     "ChargeAtiva",
+    "ContratoFaturamento",
     "ComprovanteExtraido",
     "DadosCobrancaContrato",
 ]
