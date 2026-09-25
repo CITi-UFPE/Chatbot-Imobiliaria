@@ -68,3 +68,12 @@ def test_system_prompt_orienta_conta_em_aberto_para_a1():
     responder isso com dado real."""
     prompt = clf.SYSTEM_PROMPT.lower()
     assert "conta" in prompt and "aberto" in prompt
+
+
+def test_system_prompt_cita_variacoes_de_pergunta_sobre_faturas_para_a1():
+    """Regressão: 'quais são minhas contas em aberto' escalou pro gestor
+    enquanto 'minhas faturas' foi respondida pelo A1 — as variações comuns
+    precisam estar explícitas como A1."""
+    prompt = clf.SYSTEM_PROMPT.lower()
+    assert "faturas" in prompt
+    assert "quanto estou devendo" in prompt

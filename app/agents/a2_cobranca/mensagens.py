@@ -42,7 +42,7 @@ def _rotulo_conta(tipo: str) -> str:
     return ROTULOS_CONTA.get(tipo, "conta")
 
 
-def _calcular_encargos(
+def calcular_encargos(
     valor_esperado: float,
     dias_atraso: int,
     multa_moratoria_percentual: float | None,
@@ -83,7 +83,7 @@ def _montar_mensagem_aluguel(
             f"Assim que fizer o pagamento, envie o comprovante por aqui."
         )
 
-    valor_multa, valor_juros, valor_total = _calcular_encargos(
+    valor_multa, valor_juros, valor_total = calcular_encargos(
         charge.valor_esperado, dias_atraso, dados.multa_moratoria_percentual, dados.juros_moratorio_mensal
     )
 
@@ -153,7 +153,7 @@ def _montar_mensagem_conta(
             f"Assim que pagar, envie o comprovante por aqui."
         )
 
-    valor_multa, valor_juros, valor_total = _calcular_encargos(
+    valor_multa, valor_juros, valor_total = calcular_encargos(
         charge.valor_esperado, dias_atraso, dados.multa_moratoria_percentual, dados.juros_moratorio_mensal
     )
 
@@ -225,7 +225,7 @@ def montar_template_cobranca(
             parametros=(nome, descricao, vencimento),
         )
 
-    valor_multa, valor_juros, valor_total = _calcular_encargos(
+    valor_multa, valor_juros, valor_total = calcular_encargos(
         charge.valor_esperado,
         dias_atraso,
         dados.multa_moratoria_percentual,
