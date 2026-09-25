@@ -959,7 +959,34 @@ function UploadWizard({
                     onChange={(e) => updateDados({ inquilino_cpf_cnpj: e.target.value })}
                   />
                 </Field>
+                <Field label="Multa por atraso (fração — ex: 0.10 = 10%, NUNCA 10)">
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    max={0.99}
+                    value={dados.multa_moratoria_percentual ?? ""}
+                    onChange={(e) =>
+                      updateDados({
+                        multa_moratoria_percentual: e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="Juros de mora ao mês (fração — ex: 0.01 = 1%, NUNCA 1)">
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    max={0.99}
+                    value={dados.juros_moratorio_mensal}
+                    onChange={(e) => updateDados({ juros_moratorio_mensal: Number(e.target.value) })}
+                  />
+                </Field>
               </div>
+              {/* Ambos os campos acima têm `check` no banco (Migration 025) barrando
+                  valor >= 1 — mas o objetivo aqui é a equipe já ver e corrigir o
+                  número certo ANTES de salvar, não depender só da trava do banco. */}
             </details>
 
             <Field label="Cláusulas identificadas">

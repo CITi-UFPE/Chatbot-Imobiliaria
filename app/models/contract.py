@@ -134,10 +134,19 @@ class ContratoExtraido(BaseModel):
         gt=0,
     )
     multa_moratoria_percentual: Optional[float] = Field(
-        default=None, description="Percentual de multa por atraso no pagamento, se especificado."
+        default=None,
+        description=(
+            "Percentual de multa por atraso no pagamento, se especificado, como FRAÇÃO decimal "
+            "(ex: 10% de multa = 0.10, NUNCA 10). Mesma convenção de juros_moratorio_mensal."
+        ),
+        ge=0,
+        lt=1,
     )
     juros_moratorio_mensal: float = Field(
-        default=0.01, description="Percentual de juros de mora ao mês (padrão 1% = 0.01)."
+        default=0.01,
+        description="Percentual de juros de mora ao mês, como FRAÇÃO decimal (padrão 1% = 0.01, NUNCA 1).",
+        ge=0,
+        lt=1,
     )
     aviso_previo_dias: int = Field(description="Prazo de aviso prévio para rescisão, em dias.")
     aviso_previo_a_partir_mes: int = Field(
