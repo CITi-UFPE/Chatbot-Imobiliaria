@@ -71,8 +71,6 @@ class AvaliacaoEscalonamento(BaseModel):
 
 TOOL_NAME = "escalar_para_humano"
 
-_MOTIVOS_VIA_MENSAGEM = frozenset(c.motivo for c in CRITERIOS if c.deteccao_via_mensagem)
-
 _CRITERIOS_TEXTO = "\n".join(
     f"- {c.motivo}: {c.descricao}" for c in CRITERIOS if c.deteccao_via_mensagem
 )
@@ -83,21 +81,18 @@ SYSTEM_PROMPT = (
     "a mensagem se encaixar claramente em um dos critérios abaixo. Não escale dúvidas "
     "simples que o contrato já responde e que não tenham risco financeiro, jurídico ou de "
     "segurança associado — a maioria das mensagens não deve escalar.\n\n"
-    "NÃO escale consultas informativas que o sistema responde com dados do próprio "
+    "NÃO escale consultas informativas que o atendimento responde com dados do próprio "
     "contrato e das cobranças, mesmo que soem financeiras: contas em aberto, faturas, "
     "cobranças pendentes ou atrasadas, quanto o inquilino está devendo (com ou sem "
     "multa e juros), status de um pagamento, valor do aluguel, vencimento, chave Pix/dados "
-    "bancários, ou quanto ficaria a multa se atrasar. Quem responde isso é o atendimento, "
-    "com acesso aos dados — você não vê esses dados e não deve concluir que eles não "
-    "existem. Pedido de desconto, parcelamento, renegociação ou perdão de multa continua "
-    "sendo 'desconto_renegociacao'.\n\n"
+    "bancários, ou quanto ficaria a multa se atrasar. Você não vê esses dados, então não "
+    "conclua que eles não existem — isso também NÃO é 'sem_clausula'. Pedido de desconto, "
+    "parcelamento, renegociação ou perdão de multa continua sendo "
+    "'desconto_renegociacao'.\n\n"
     f"Critérios:\n{_CRITERIOS_TEXTO}\n\n"
     "Critérios 'loop_nao_resolvido' e 'frustracao_crescente' são avaliados separadamente "
     "(dependem de padrão ao longo da conversa, não desta chamada) — não os use aqui."
 )
-# Nota: 'sem_clausula' também fica fora da lista (deteccao_via_mensagem=False
-# em criterios.py) — é detectado pelo A1 via tool escalar_sem_clausula,
-# depois de ler o contrato.
 # Nota: 'atraso_severo' nem entra na lista de critérios acima (não é
 # detectável por mensagem — ver criterios.py), então nunca aparece pro
 # Claude aqui. Quem dispara esse motivo é o cron do A2, chamando
@@ -138,19 +133,7 @@ def avaliar_escalonamento(
     if tool_use is None:
         return None  # Claude decidiu não escalar
 
-    avaliacao = AvaliacaoEscalonamento.model_validate(tool_use.input)
-    if avaliacao.motivo not in _MOTIVOS_VIA_MENSAGEM:
-        # O schema da tool aceita todos os motivos (o A1 e o cron do A2 também
-        # usam AvaliacaoEscalonamento), mas este avaliador só vê o texto da
-        # mensagem — um motivo que depende de outro dado (ex: sem_clausula)
-        # escolhido aqui é chute, não escala.
-        logger.info(
-            "avaliar_escalonamento devolveu motivo '%s', que não é detectável só pela "
-            "mensagem — descartado.",
-            avaliacao.motivo,
-        )
-        return None
-    return avaliacao
+    return AvaliacaoEscalonamento.model_validate(tool_use.input)
 
 
 def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) -> str:

@@ -40,13 +40,6 @@ class CriterioEscalonamento:
     #     orquestrador) ainda não existe — ver detectar_loop_ou_frustracao em
     #     escalonamento.py, que é uma aproximação heurística, não a versão
     #     final.
-    #   - sem_clausula: só dá pra saber que o contrato não responde a dúvida
-    #     DEPOIS de ler os dados dele — e avaliar_escalonamento não vê
-    #     contrato nenhum. Com esse critério no prompt, o avaliador escalava
-    #     perguntas que o A1 responde com dado real (caso real: "quais são
-    #     minhas contas em aberto?" virou escalonamento com "não tenho acesso
-    #     aos dados financeiros"). Quem detecta é o A1, via tool
-    #     escalar_sem_clausula, depois de consultar o contrato.
     #   - atraso_severo: nem depende de mensagem nenhuma — é disparado pelo
     #     cron diário do A2 (ver docs/schemas/009_escalation_atraso_severo.sql),
     #     não por texto de conversa.
@@ -57,7 +50,6 @@ CRITERIOS: list[CriterioEscalonamento] = [
     CriterioEscalonamento(
         "sem_clausula",
         "Sem cláusula correspondente no contrato do inquilino para a dúvida levantada.",
-        deteccao_via_mensagem=False,
     ),
     CriterioEscalonamento(
         "pedido_humano",

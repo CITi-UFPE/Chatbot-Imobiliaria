@@ -113,7 +113,7 @@ interface Negociacao {
 
 // Linha de charge em atraso (status='atrasado'), com o valor final já
 // calculado (inicial + multa + juros) seguindo a MESMA fórmula de
-// app/tools/encargos_atraso.py:calcular_encargos — precisa manter
+// app/agents/a2_cobranca/mensagens.py:calcular_encargos — precisa manter
 // as duas em sincronia se a fórmula mudar de um lado.
 interface Atraso {
   chargeId: string;
