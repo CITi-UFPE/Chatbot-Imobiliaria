@@ -85,7 +85,7 @@ function Index() {
   }
 
   return (
-    <div className="flex min-h-screen w-full bg-warm-gradient relative overflow-x-hidden">
+    <div className="flex min-h-screen w-full bg-warm-gradient relative">
       {/* Textura de fundo bem sutil (imagem enviada pelo Davi) — só
           decorativa, opacidade baixa pra não atrapalhar leitura, não
           reflete nenhum dado real. */}
