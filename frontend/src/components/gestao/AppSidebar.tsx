@@ -101,7 +101,6 @@ export function AppSidebar({
 
         <div className="p-4 border-t text-xs text-muted-foreground">
           <div className="font-medium text-foreground">Admin Imobiliária</div>
-          <div>v1.0</div>
         </div>
       </aside>
     </>
