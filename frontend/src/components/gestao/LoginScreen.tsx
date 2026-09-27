@@ -114,7 +114,7 @@ export function LoginScreen() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
-          v1.0 · Acesso restrito à equipe autorizada
+          Acesso restrito à equipe autorizada
         </p>
       </div>
       </div>
