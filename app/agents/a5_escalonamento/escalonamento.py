@@ -189,6 +189,7 @@ def executar_escalonamento(contract_id: str, avaliacao: AvaliacaoEscalonamento) 
             nome_inquilino,
             imovel_identificacao,
             telefone_inquilino,
+            contract_id=contract_id,
         )
     except Exception:
         logger.exception(

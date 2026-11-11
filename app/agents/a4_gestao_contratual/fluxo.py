@@ -83,8 +83,10 @@ from app.tools.contract_alerts_client import (
     registrar_calculo_reajuste,
     transicionar_prazo_indeterminado,
 )
+from app.tools.conversation_log import registrar_conversa_administradora
 from app.tools.indice_reajuste_client import buscar_percentual_acumulado_12_meses
 from app.tools.mensagens_gestao_contratual import montar_alerta_renovacao, montar_calculo_reajuste
+from app.tools.template_corpos_administradora import renderizar_template_administradora
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +118,24 @@ def _notificar_staff_alerta_contratual(tipo_label: str, mensagem: str) -> Option
     destino = whatsapp_client.telefone_staff()
     resultado = whatsapp_client.enviar_template(destino, _TEMPLATE_ALERTA_CONTRATUAL, [tipo_label, mensagem])
     return resultado.message_id
+
+
+def _registrar_alerta_na_conversa(
+    contract_id: UUID, tipo_label: str, mensagem: str, message_id: Optional[str]
+) -> None:
+    """Grava em conversation_logs (canal administradora) o alerta que acabou de
+    sair. `message_id` None = envio simulado (kill switch) ou notificador
+    injetado que não devolve id: nada foi mandado, nada a gravar."""
+    registrar_conversa_administradora(
+        str(contract_id),
+        mensagem=renderizar_template_administradora(
+            _TEMPLATE_ALERTA_CONTRATUAL, [tipo_label, mensagem]
+        ),
+        agente="A4",
+        remetente="agente",
+        contexto=f"{tipo_label}, contrato {contract_id}",
+        enviado=message_id is not None,
+    )
 
 
 class ResultadoExecucaoAlertas(BaseModel):
@@ -175,7 +195,8 @@ def processar_alerta_renovacao(
     # alerta de negócio — se o envio abaixo falhar, propaga (o chamador,
     # executar_alertas_contratuais, isola por contrato e registra em
     # resultado.erros), mas o registro já feito não é desfeito.
-    enviar_notificacao_fn(_LABEL_RENOVACAO, mensagem)
+    message_id = enviar_notificacao_fn(_LABEL_RENOVACAO, mensagem)
+    _registrar_alerta_na_conversa(contrato.id, _LABEL_RENOVACAO, mensagem, message_id)
 
     return mensagem
 
@@ -222,7 +243,8 @@ def processar_calculo_reajuste(
         return None  # já disparado hoje
 
     # Mesma separação registro/transporte de processar_alerta_renovacao acima.
-    enviar_notificacao_fn(_LABEL_REAJUSTE, mensagem)
+    message_id = enviar_notificacao_fn(_LABEL_REAJUSTE, mensagem)
+    _registrar_alerta_na_conversa(contrato.id, _LABEL_REAJUSTE, mensagem, message_id)
 
     return mensagem
 

@@ -56,7 +56,7 @@ def _avaliacao(**overrides) -> esc.AvaliacaoEscalonamento:
 def test_executar_escalonamento_grava_wamid_quando_notificacao_e_enviada(monkeypatch):
     client = _FakeClientEscalonamento()
     monkeypatch.setattr(esc, "obter_client_agente", lambda contract_id: client)
-    monkeypatch.setattr(esc, "notificar_staff_escalonamento", lambda *a: "wamid.NOTIF1")
+    monkeypatch.setattr(esc, "notificar_staff_escalonamento", lambda *a, **kw: "wamid.NOTIF1")
 
     protocolo = esc.executar_escalonamento("contract-1", _avaliacao())
 
@@ -73,7 +73,7 @@ def test_executar_escalonamento_nao_grava_wamid_em_modo_simulado(monkeypatch):
     registro."""
     client = _FakeClientEscalonamento()
     monkeypatch.setattr(esc, "obter_client_agente", lambda contract_id: client)
-    monkeypatch.setattr(esc, "notificar_staff_escalonamento", lambda *a: None)
+    monkeypatch.setattr(esc, "notificar_staff_escalonamento", lambda *a, **kw: None)
 
     esc.executar_escalonamento("contract-1", _avaliacao())
 
@@ -85,7 +85,7 @@ def test_executar_escalonamento_falha_ao_notificar_nao_impede_protocolo(monkeypa
     client = _FakeClientEscalonamento()
     monkeypatch.setattr(esc, "obter_client_agente", lambda contract_id: client)
 
-    def _falha(*a):
+    def _falha(*a, **kw):
         raise RuntimeError("Meta fora do ar")
 
     monkeypatch.setattr(esc, "notificar_staff_escalonamento", _falha)
@@ -107,7 +107,7 @@ def test_executar_escalonamento_falha_ao_gravar_wamid_nao_propaga(monkeypatch):
 
     client = _ClientComFalhaNoRegistro()
     monkeypatch.setattr(esc, "obter_client_agente", lambda contract_id: client)
-    monkeypatch.setattr(esc, "notificar_staff_escalonamento", lambda *a: "wamid.NOTIF1")
+    monkeypatch.setattr(esc, "notificar_staff_escalonamento", lambda *a, **kw: "wamid.NOTIF1")
 
     protocolo = esc.executar_escalonamento("contract-1", _avaliacao())  # não deve levantar
 
@@ -396,6 +396,49 @@ def test_fluxo_completo_repassa_resposta_ao_inquilino_e_marca_resolvido(monkeypa
     ]  # foi pro telefone do INQUILINO, não da staff, com o conteúdo real da gestora
     assert chamadas_marcar == ["ESC-2026-00001"]
     assert chamadas_texto_staff == [("+5581988887777", "Repassado ao inquilino! (protocolo ESC-2026-00001)")]
+
+
+def test_reply_da_administradora_e_as_confirmacoes_a_ela_sao_gravados(monkeypatch, staff_configurada):
+    """Migration 026: o texto que a administradora respondeu (remetente gestora)
+    e o que o sistema devolveu a ela entram em conversation_logs no canal
+    administradora, no contrato do escalonamento."""
+    monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: MagicMock())
+    monkeypatch.setattr(pm, "obter_escalonamento_aberto", lambda client, wamid: dict(_ESCALONAMENTO_ABERTO))
+    monkeypatch.setattr(pm, "compor_resposta_inquilino", lambda pergunta, resposta: "Não é permitido.")
+    monkeypatch.setattr(pm, "marcar_resolvido", lambda client, protocolo: True)
+    monkeypatch.setattr(pm, "enviar_saida", lambda tel, saida: MagicMock(simulado=False))
+    monkeypatch.setattr(pm, "registrar_se_enviado", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        pm.whatsapp_client, "enviar_texto", lambda tel, txt: MagicMock(simulado=False)
+    )
+    gravados = []
+    monkeypatch.setattr(
+        pm,
+        "registrar_conversa_administradora",
+        lambda contract_id, **kw: gravados.append((contract_id, kw["remetente"], kw["mensagem"], kw["enviado"])),
+    )
+
+    pm.processar_mensagem_recebida(_payload_reply_staff(texto="não pode"), responder_via_whatsapp=True)
+
+    assert gravados == [
+        ("contract-1", "gestora", "não pode", True),
+        ("contract-1", "agente", "Repassado ao inquilino! (protocolo ESC-2026-00001)", True),
+    ]
+
+
+def test_reply_sem_caso_correspondente_nao_grava_nada(monkeypatch, staff_configurada):
+    """Sem contrato identificado não há onde gravar (contract_id é not null)."""
+    monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: None)
+    monkeypatch.setattr(
+        pm.whatsapp_client, "enviar_texto", lambda tel, txt: MagicMock(simulado=False)
+    )
+    chamadas = []
+    monkeypatch.setattr(pm, "registrar_conversa_administradora", lambda *a, **kw: chamadas.append(a))
+
+    pm.processar_mensagem_recebida(_payload_reply_staff(), responder_via_whatsapp=True)
+
+    assert all(a[0] is None for a in chamadas)  # helper recebe contract_id None e não grava
 
 
 class _ClientJanelaFechada:

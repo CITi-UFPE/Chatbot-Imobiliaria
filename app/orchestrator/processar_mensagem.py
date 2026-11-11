@@ -30,10 +30,11 @@ Quatro tipos de mensagem tratados, cada um com seu próprio caminho:
     contract_id por telefone (o telefone dela não está em
     contracts.telefone_whatsapp), o contract_id/charge_id vêm decodificados
     do próprio id/payload do botão. Vai direto pra rotear_clique_botao_a2,
-    sem passar por agent_log_message. Os dois formatos existem porque a
-    Meta usa envelopes diferentes pra clique de Interactive Message
-    (enviar_botoes) vs. quick reply de Message Template (enviar_template) —
-    ver _processar_clique_botao.
+    sem passar pelo log do chat do inquilino (o clique é gravado em
+    conversation_logs no canal administradora, ver rotear_clique_botao_a2).
+    Os dois formatos existem porque a Meta usa envelopes diferentes pra clique
+    de Interactive Message (enviar_botoes) vs. quick reply de Message Template
+    (enviar_template) — ver _processar_clique_botao.
 
 Roteamento de intenção real entre A1-A5 vive em app/orchestrator/orchestrator.py.
 """
@@ -61,7 +62,11 @@ from app.orchestrator.orchestrator import (
 )
 from app.orchestrator.phone_normalization import gerar_candidatos_telefone_br
 from app.tools import whatsapp_client
-from app.tools.conversation_log import registrar_se_enviado
+from app.tools.conversation_log import (
+    envio_foi_real,
+    registrar_conversa_administradora,
+    registrar_se_enviado,
+)
 from app.tools.whatsapp_client import baixar_midia, mascarar_telefone
 from app.tools.whatsapp_message_policy import (
     TEMPLATE_RETOMADA_ATENDIMENTO,
@@ -418,9 +423,9 @@ def _processar_audio(mensagem: dict, *, responder_via_whatsapp: bool = False) ->
 
 def _processar_clique_botao(mensagem: dict, tipo_mensagem: str) -> Optional[str]:
     """Clique de botão interativo — vem do telefone da FERNANDA (staff), não
-    de um inquilino, então não passa por _resolver_contract_id nem por
-    agent_log_message (não é mensagem de conversa de contrato, é ação
-    administrativa). contract_id/charge_id vêm decodificados do próprio
+    de um inquilino, então não passa por _resolver_contract_id nem pelo log
+    do chat do inquilino (o clique é gravado no canal administradora de
+    conversation_logs por rotear_clique_botao_a2). contract_id/charge_id vêm decodificados do próprio
     button_id dentro de rotear_clique_botao_a2.
 
     `tipo_mensagem` distingue os dois formatos que a Meta usa pra clique de
@@ -454,21 +459,37 @@ def _processar_clique_botao(mensagem: dict, tipo_mensagem: str) -> Optional[str]
 
 
 def _enviar_texto_staff_se_necessario(
-    telefone_staff: str, texto: str, responder_via_whatsapp: bool
+    telefone_staff: str,
+    texto: str,
+    responder_via_whatsapp: bool,
+    contract_id: Optional[str] = None,
 ) -> None:
     """Confirmação/erro curto de volta pra Fernanda (nunca pro inquilino) —
     mesma cautela de _enviar_resposta_se_necessario: falha de transporte é
     logada, nunca propagada (os efeitos de negócio já aconteceram ou já
-    foram decididos antes desta chamada)."""
+    foram decididos antes desta chamada).
+
+    `contract_id`, quando já identificado, grava o texto em conversation_logs
+    (canal administradora); respostas dadas antes de saber o contrato (reply
+    sem caso correspondente) não têm onde ser gravadas."""
     if not responder_via_whatsapp or not telefone_staff:
         return
     try:
-        whatsapp_client.enviar_texto(telefone_staff, texto)
+        resultado = whatsapp_client.enviar_texto(telefone_staff, texto)
     except Exception:
         logger.exception(
             "Falha ao enviar confirmação/erro para a staff (%s).",
             mascarar_telefone(telefone_staff),
         )
+        return
+    registrar_conversa_administradora(
+        contract_id,
+        mensagem=texto,
+        agente="A5",
+        remetente="agente",
+        contexto=f"confirmação à administradora, contrato {contract_id}",
+        enviado=envio_foi_real(resultado),
+    )
 
 
 def _processar_resposta_staff(mensagem: dict, *, responder_via_whatsapp: bool = False) -> Optional[str]:
@@ -517,20 +538,32 @@ def _processar_resposta_staff(mensagem: dict, *, responder_via_whatsapp: bool = 
     except Exception:
         logger.exception("Falha ao buscar escalonamento aberto (contrato %s)", contract_id)
         resposta = "Tive um problema para localizar esse caso — verifique manualmente no banco."
-        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp, contract_id)
         return resposta
 
     if escalonamento is None:
         resposta = "Esse caso não está mais em aberto (já deve ter sido resolvido)."
-        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp, contract_id)
         return resposta
+
+    # O que a administradora respondeu é parte da conversa do contrato — fica
+    # gravado mesmo que a composição/entrega ao inquilino falhe depois. No chat
+    # simulado (responder_via_whatsapp=False) nada é gravado, como no resto.
+    registrar_conversa_administradora(
+        contract_id,
+        mensagem=texto,
+        agente="A5",
+        remetente="gestora",
+        contexto=f"reply da administradora, contrato {contract_id}",
+        enviado=responder_via_whatsapp,
+    )
 
     try:
         resposta_inquilino = compor_resposta_inquilino(escalonamento["descricao"], texto)
     except Exception:
         logger.exception("Falha ao compor resposta pro inquilino (contrato %s)", contract_id)
         resposta = "Tive um problema para compor a resposta — verifique manualmente."
-        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp)
+        _enviar_texto_staff_se_necessario(telefone_staff, resposta, responder_via_whatsapp, contract_id)
         return resposta
 
     if not responder_via_whatsapp:
@@ -569,6 +602,7 @@ def _processar_resposta_staff(mensagem: dict, *, responder_via_whatsapp: bool = 
             "Tive um problema para entregar sua resposta ao inquilino — o caso continua "
             "em aberto, pode tentar de novo.",
             responder_via_whatsapp,
+            contract_id,
         )
         return "Falha ao enviar resposta ao inquilino (ver logs)."
 
@@ -585,6 +619,7 @@ def _processar_resposta_staff(mensagem: dict, *, responder_via_whatsapp: bool = 
         telefone_staff,
         f"Repassado ao inquilino! (protocolo {escalonamento['protocolo']})",
         responder_via_whatsapp,
+        contract_id,
     )
     return resposta_inquilino
 

@@ -197,7 +197,7 @@ class TestExecutarEscalonamentoSobreviveAFalhaDeNotificacao:
             "app.agents.a5_escalonamento.escalonamento.obter_client_agente", return_value=client_fake
         ), patch(
             "app.agents.a5_escalonamento.escalonamento.notificar_staff_escalonamento",
-            side_effect=lambda protocolo, motivo, descricao, *dados_inquilino: chamadas_staff.append(
+            side_effect=lambda protocolo, motivo, descricao, *dados_inquilino, contract_id=None: chamadas_staff.append(
                 (protocolo, motivo, descricao, *dados_inquilino)
             ),
         ):
