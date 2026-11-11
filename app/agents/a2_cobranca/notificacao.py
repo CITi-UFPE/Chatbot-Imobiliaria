@@ -50,7 +50,12 @@ from app.agents.a2_cobranca.button_ids import (
     montar_button_id_divergente,
 )
 from app.tools import whatsapp_client
-from app.tools.conversation_log import registrar_se_enviado
+from app.tools.conversation_log import (
+    envio_foi_real,
+    registrar_conversa_administradora,
+    registrar_se_enviado,
+)
+from app.tools.template_corpos_administradora import renderizar_mensagem_administradora
 from app.tools.whatsapp_client import ResultadoEnvio
 from app.tools.whatsapp_message_policy import (
     BotaoTemplateQuickReply,
@@ -100,6 +105,19 @@ def _enviar_com_log(operacao: str, telefone: str, enviar):
     except Exception as erro:
         _logar_falha_envio(operacao, telefone, erro)
         raise
+
+
+def _registrar_envio_administradora(contract_id: str | None, resultado, *, mensagem: str, contexto: str) -> None:
+    """Grava em conversation_logs (canal administradora) o que acabou de ser
+    mandado à Fernanda. Nunca levanta e não grava envio simulado."""
+    registrar_conversa_administradora(
+        contract_id,
+        mensagem=mensagem,
+        agente="A2",
+        remetente="agente",
+        contexto=contexto,
+        enviado=envio_foi_real(resultado),
+    )
 
 
 def _destino_staff(telefone: str) -> str:
@@ -200,10 +218,16 @@ def notificar_fernanda_comprovante(
             ),
         ),
     )
-    _enviar_com_log(
+    resultado = _enviar_com_log(
         "notificar_fernanda_comprovante",
         destino,
         lambda: enviar_saida(destino, mensagem),
+    )
+    _registrar_envio_administradora(
+        contract_id,
+        resultado,
+        mensagem=renderizar_mensagem_administradora(mensagem),
+        contexto=f"comprovante p/ conferência, charge {charge_id}",
     )
 
 
@@ -271,10 +295,16 @@ def notificar_fernanda_pagamento_combinado(
             ),
         ),
     )
-    _enviar_com_log(
+    resultado = _enviar_com_log(
         "notificar_fernanda_pagamento_combinado",
         destino,
         lambda: enviar_saida(destino, mensagem),
+    )
+    _registrar_envio_administradora(
+        contract_id,
+        resultado,
+        mensagem=renderizar_mensagem_administradora(mensagem),
+        contexto="pagamento combinado",
     )
 
 
@@ -285,8 +315,12 @@ def notificar_fernanda_pagamento_combinado_manual(
     valor_extraido: float | None,
     data_extraida: str | None,
     charges_em_aberto: list[dict],
+    contract_id: str | None = None,
 ) -> None:
-    """Solicita resolução na plataforma, sem botões nem mudança de status."""
+    """Solicita resolução na plataforma, sem botões nem mudança de status.
+
+    `contract_id` só serve pra gravar a mensagem em conversation_logs; sem ele
+    a notificação sai normalmente e simplesmente não é gravada."""
     destino = _destino_staff(telefone_fernanda)
     charges_ordenadas = sorted(charges_em_aberto, key=_chave_ordenacao_charge)
     linhas_charges = "\n".join(
@@ -307,10 +341,16 @@ def notificar_fernanda_pagamento_combinado_manual(
             linhas_charges,
         ),
     )
-    _enviar_com_log(
+    resultado = _enviar_com_log(
         "notificar_fernanda_pagamento_combinado_manual",
         destino,
         lambda: enviar_saida(destino, mensagem),
+    )
+    _registrar_envio_administradora(
+        contract_id,
+        resultado,
+        mensagem=renderizar_mensagem_administradora(mensagem),
+        contexto="pagamento combinado (resolução manual)",
     )
 
 
@@ -345,10 +385,13 @@ def notificar_pergunta_qual_charge_paga(
             f"em botões (limite de {_MAX_CHARGES_BOTAO_QUAL_PAGA} da Meta), responda por aqui "
             f"dizendo qual delas:\n{linhas}"
         )
-        _enviar_com_log(
+        resultado = _enviar_com_log(
             "notificar_pergunta_qual_charge_paga",
             telefone_fernanda,
             lambda: whatsapp_client.enviar_texto(telefone_fernanda, texto),
+        )
+        _registrar_envio_administradora(
+            contract_id, resultado, mensagem=texto, contexto="pergunta qual cobrança foi paga"
         )
         return
 
@@ -363,10 +406,17 @@ def notificar_pergunta_qual_charge_paga(
         }
         for charge in charges
     ]
-    _enviar_com_log(
+    resultado = _enviar_com_log(
         "notificar_pergunta_qual_charge_paga",
         telefone_fernanda,
         lambda: whatsapp_client.enviar_botoes(telefone_fernanda, corpo, botoes),
+    )
+    opcoes = " / ".join(b["titulo"] for b in botoes)
+    _registrar_envio_administradora(
+        contract_id,
+        resultado,
+        mensagem=f"{corpo} [{opcoes}]",
+        contexto="pergunta qual cobrança foi paga",
     )
 
 

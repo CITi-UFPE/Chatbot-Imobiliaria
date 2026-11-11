@@ -49,7 +49,7 @@ def test_notifica_com_nome_imovel_e_telefone_do_contrato(monkeypatch):
     monkeypatch.setattr(
         esc,
         "notificar_staff_escalonamento",
-        lambda protocolo, motivo, descricao, nome, imovel, telefone: chamadas.append(
+        lambda protocolo, motivo, descricao, nome, imovel, telefone, contract_id=None: chamadas.append(
             (protocolo, motivo, descricao, nome, imovel, telefone)
         ),
     )
@@ -88,7 +88,7 @@ def test_falha_ao_buscar_dados_do_contrato_ainda_assim_notifica(monkeypatch, cap
     monkeypatch.setattr(
         esc,
         "notificar_staff_escalonamento",
-        lambda protocolo, motivo, descricao, nome, imovel, telefone: chamadas.append(
+        lambda protocolo, motivo, descricao, nome, imovel, telefone, contract_id=None: chamadas.append(
             (protocolo, motivo, descricao, nome, imovel, telefone)
         ),
     )

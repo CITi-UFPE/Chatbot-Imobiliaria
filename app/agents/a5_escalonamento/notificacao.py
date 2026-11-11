@@ -32,6 +32,8 @@ import logging
 from typing import Optional
 
 from app.tools import whatsapp_client
+from app.tools.conversation_log import registrar_conversa_administradora
+from app.tools.template_corpos_administradora import renderizar_template_administradora
 from app.tools.whatsapp_message_policy import MensagemTemplate, enviar_saida
 
 logger = logging.getLogger(__name__)
@@ -49,8 +51,16 @@ _TEMPLATE_MANUTENCAO_EQUIPE = "manutencao_equipe"
 
 
 def _enviar_template_staff(
-    nome_template: str, parametros: list[str], *, operacao: str
+    nome_template: str,
+    parametros: list[str],
+    *,
+    operacao: str,
+    contract_id: Optional[str] = None,
+    agente: Optional[str] = None,
 ) -> Optional[str]:
+    """`contract_id`/`agente` só servem pra gravar em conversation_logs (canal
+    administradora) o texto enviado; sem `contract_id` a notificação sai
+    normalmente e não é gravada."""
     if not whatsapp_client.envio_ativo():
         logger.info("whatsapp_client: operacao=%s simulado=True", operacao)
         return None
@@ -72,6 +82,14 @@ def _enviar_template_staff(
             erro,
         )
         raise
+    registrar_conversa_administradora(
+        contract_id,
+        mensagem=renderizar_template_administradora(nome_template, parametros),
+        agente=agente,
+        remetente="agente",
+        contexto=f"{operacao}, contrato {contract_id}",
+        enviado=not getattr(resultado, "simulado", False) is True,
+    )
     return resultado.message_id
 
 
@@ -95,6 +113,7 @@ def notificar_staff_escalonamento(
     nome_inquilino: str = "",
     imovel_identificacao: str = "",
     telefone_inquilino: str = "",
+    contract_id: Optional[str] = None,
 ) -> Optional[str]:
     """A5 estruturado: protocolo, motivo, descrição, e agora também
     nome/imóvel/telefone do inquilino — sem isso a equipe recebia a
@@ -114,15 +133,21 @@ def notificar_staff_escalonamento(
             telefone_inquilino or "não informado",
         ],
         operacao="notificar_staff_escalonamento",
+        contract_id=contract_id,
+        agente="A5",
     )
 
 
-def notificar_staff_manutencao(parametros: list[str]) -> Optional[str]:
+def notificar_staff_manutencao(parametros: list[str], contract_id: Optional[str] = None) -> Optional[str]:
     """A3 estruturado (checkup pós-WA-06/WA-08, Ponto 3): `parametros` já
     vem pronto de app/tools/mensagens_manutencao.py::
     montar_parametros_notificacao_gestora, na ordem protocolo/imóvel/
     categoria/urgência/descrição do template `manutencao_equipe` — esta
     função só transporta, não reformata nada."""
     return _enviar_template_staff(
-        _TEMPLATE_MANUTENCAO_EQUIPE, parametros, operacao="notificar_staff_manutencao"
+        _TEMPLATE_MANUTENCAO_EQUIPE,
+        parametros,
+        operacao="notificar_staff_manutencao",
+        contract_id=contract_id,
+        agente="A3",
     )

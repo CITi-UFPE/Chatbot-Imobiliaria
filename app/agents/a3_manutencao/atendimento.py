@@ -136,6 +136,6 @@ def responder_manutencao(contract_id: str, mensagem_atual: str, historico_conver
         _salvar_estado(contract_id, resultado.estado)
 
     if resultado.notificacao_gestora_parametros:
-        notificar_staff_manutencao(resultado.notificacao_gestora_parametros)
+        notificar_staff_manutencao(resultado.notificacao_gestora_parametros, contract_id=contract_id)
 
     return resultado.resposta_inquilino

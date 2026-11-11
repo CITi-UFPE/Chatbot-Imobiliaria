@@ -66,6 +66,7 @@ from app.agents.a3_manutencao import responder_manutencao
 from app.agents.a5_escalonamento import avaliar_escalonamento, executar_escalonamento
 from app.orchestrator.agent_auth import obter_client_agente
 from app.orchestrator.classificador import classificar_intencao
+from app.tools.conversation_log import registrar_conversa_administradora
 
 logger = logging.getLogger(__name__)
 
@@ -293,12 +294,36 @@ def rotear_comprovante_a2(
     return _RESPOSTA_A2_COMPROVANTE_RECEBIDO, "A2"
 
 
+_ROTULOS_CLIQUE_BOTAO = {
+    ACAO_CONFIRMAR: "Confirmar pagamento",
+    ACAO_DIVERGENTE: "Valor diverge",
+    ACAO_COMBINADO_TODOS: "Cobre os dois (pagamento combinado)",
+    ACAO_ESCOLHER_PARCIAL: "Só uma delas (pagamento combinado)",
+    ACAO_COMBINADO_PARCIAL: "Pagamento combinado: só uma foi paga",
+}
+
+
+def _registrar_clique_botao(decodificado) -> None:
+    """Grava o clique da administradora em conversation_logs (canal
+    administradora, remetente gestora), no contrato do próprio botão. Nunca
+    levanta: a ação de negócio do clique não pode depender do log."""
+    rotulo = _ROTULOS_CLIQUE_BOTAO.get(decodificado.acao, decodificado.acao)
+    registrar_conversa_administradora(
+        decodificado.contract_id,
+        mensagem=f"[Botão] {rotulo} — cobrança(s) {', '.join(decodificado.charge_ids)}",
+        agente="A2",
+        remetente="gestora",
+        contexto=f"clique {decodificado.acao}, contrato {decodificado.contract_id}",
+    )
+
+
 def rotear_clique_botao_a2(button_id: str, telefone_remetente: str) -> str:
     """Chamado direto por app/orchestrator/processar_mensagem.py quando a
     mensagem recebida é um clique de botão interativo. Diferente de todo o
     resto deste módulo: quem clicou é a FERNANDA (staff), não um inquilino
-    numa conversa de contrato — por isso não passa por agent_log_message
-    (isso é uma ação administrativa, não uma mensagem de conversa).
+    numa conversa de contrato — por isso não passa pelo log do chat do
+    inquilino. O clique é gravado em conversation_logs no canal
+    "administradora" (ver _registrar_clique_botao), no contrato do botão.
     contract_id/charge_id(s) vêm decodificados do próprio button_id — ver
     app/agents/a2_cobranca/button_ids.py. `telefone_remetente` (o telefone
     de quem clicou) só é usado pela ação ESCOLHER_PAGAMENTO_PARCIAL (WA-06,
@@ -311,6 +336,8 @@ def rotear_clique_botao_a2(button_id: str, telefone_remetente: str) -> str:
     if decodificado is None:
         logger.warning("Clique de botão do A2 com id não reconhecido: %r", button_id)
         return "Não consegui reconhecer essa ação — verifique manualmente no banco."
+
+    _registrar_clique_botao(decodificado)
 
     try:
         if decodificado.acao == ACAO_CONFIRMAR:

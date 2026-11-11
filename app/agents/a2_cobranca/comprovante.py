@@ -257,6 +257,7 @@ def _resolver_charge_e_notificar(
                 extraido.valor_identificado,
                 extraido.data_identificada,
                 charges_em_aberto=charges_abertas,
+                contract_id=contract_id,
             )
             return
 
