@@ -63,6 +63,8 @@ def _client_agente_fake(updates_registrados: list) -> MagicMock:
         elif nome_funcao == "agent_update_charge_status":
             updates_registrados.append(parametros)
             builder.execute.return_value = MagicMock(data=None)
+        elif nome_funcao == "agent_log_message":
+            builder.execute.return_value = MagicMock(data=None)
         else:
             raise ValueError(f"RPC não mockada neste teste: {nome_funcao}")
         return builder

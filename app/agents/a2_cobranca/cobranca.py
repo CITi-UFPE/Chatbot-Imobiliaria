@@ -19,11 +19,12 @@ import logging
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from app.agents.a2_cobranca.mensagens import montar_template_cobranca
+from app.agents.a2_cobranca.mensagens import montar_template_cobranca, renderizar_template_cobranca
 from app.agents.a2_cobranca.notificacao import enviar_mensagem_cobranca
 from app.agents.a2_cobranca.schemas import ChargeAtiva, DadosCobrancaContrato, EstagioCobranca
 from app.agents.a5_escalonamento import AvaliacaoEscalonamento, executar_escalonamento
 from app.orchestrator.agent_auth import obter_client_agente, obter_client_cron_batch
+from app.tools.conversation_log import registrar_se_enviado
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +137,28 @@ def _processar_charge(charge_raw: dict, hoje: date) -> None:
 
         mensagem = montar_template_cobranca(charge, dados_contrato, estagio, dias_atraso_hoje)
         try:
-            enviar_mensagem_cobranca(dados_contrato.telefone_whatsapp, mensagem)
-            mensagem_enviada_com_sucesso = True
+            resultado_envio = enviar_mensagem_cobranca(dados_contrato.telefone_whatsapp, mensagem)
+            # Envio simulado (kill switch WHATSAPP_ENVIO_ATIVO desligado)
+            # devolve sucesso sem ter mandado nada. Tratar como "enviado"
+            # marcaria o estágio como avisado — e, no d+15, abriria um
+            # escalonamento — sem o inquilino ter recebido a cobrança.
+            envio_simulado = getattr(resultado_envio, "simulado", False) is True
+            mensagem_enviada_com_sucesso = not envio_simulado
+            logger.info(
+                "Cobrança %s (charge %s, contrato %s, %s): %s.",
+                estagio,
+                charge.charge_id,
+                charge.contract_id,
+                charge.tipo,
+                "envio SIMULADO — estágio não marcado" if envio_simulado else "enviada",
+            )
+            registrar_se_enviado(
+                resultado_envio,
+                client_agente,
+                agente="A2",
+                mensagem=renderizar_template_cobranca(mensagem),
+                contexto=f"charge {charge.charge_id}, contrato {charge.contract_id}",
+            )
         except Exception:
             # Falha de transporte NÃO pode impedir o recálculo diário de
             # dias_atraso/status logo abaixo (ver comentário acima sobre os

@@ -61,6 +61,7 @@ from app.orchestrator.orchestrator import (
 )
 from app.orchestrator.phone_normalization import gerar_candidatos_telefone_br
 from app.tools import whatsapp_client
+from app.tools.conversation_log import registrar_se_enviado
 from app.tools.whatsapp_client import baixar_midia, mascarar_telefone
 from app.tools.whatsapp_message_policy import (
     TEMPLATE_RETOMADA_ATENDIMENTO,
@@ -549,7 +550,14 @@ def _processar_resposta_staff(mensagem: dict, *, responder_via_whatsapp: bool = 
             texto=resposta_inquilino,
             template=montar_template_resposta_gestora(resposta_inquilino),
         )
-        enviar_saida(telefone_inquilino, saida)
+        resultado_envio = enviar_saida(telefone_inquilino, saida)
+        registrar_se_enviado(
+            resultado_envio,
+            client,
+            agente="A5",
+            mensagem=resposta_inquilino,
+            contexto=f"resposta da gestora, contrato {contract_id}",
+        )
     except Exception:
         logger.exception(
             "Falha ao enviar resposta da gestora ao inquilino (contrato %s) — escalonamento "

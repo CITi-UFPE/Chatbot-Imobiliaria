@@ -190,6 +190,43 @@ def montar_mensagem(
     return _montar_mensagem_conta(charge, dados, estagio, dias_atraso)
 
 
+# Corpos dos templates Meta de cobrança — espelham docs/whatsapp/templates-meta.md
+# (seções aviso_vencimento, aviso_atraso, aviso_atraso_severo). Usados só pra
+# gravar em conversation_logs o texto que o inquilino recebeu; o envio em si
+# manda nome + parâmetros e a Meta monta o corpo aprovado. Se o corpo
+# aprovado no WhatsApp Manager mudar, atualizar aqui também.
+_CORPOS_TEMPLATE_COBRANCA: dict[str, str] = {
+    "aviso_vencimento": (
+        "Olá, {{1}}! Passando para lembrar que {{2}} vence dia {{3}}. "
+        "Qualquer dúvida, é só chamar por aqui."
+    ),
+    "aviso_atraso": (
+        "Olá, {{1}}. Não localizamos o pagamento de {{2}} (vencimento {{3}}). "
+        "O débito está em aberto há {{4}} dias. Valor original: R$ {{5}}. Multa: R$ {{6}}. "
+        "Juros: R$ {{7}}. Valor total atualizado: R$ {{8}}. "
+        "Assim que fizer o pagamento, envie o comprovante por aqui."
+    ),
+    "aviso_atraso_severo": (
+        "Olá, {{1}}. O débito de {{2}} (vencimento {{3}}) segue em aberto há {{4}} dias, "
+        "sem que tenhamos recebido comprovante de pagamento. Valor atualizado: R$ {{5}}. "
+        "Pedimos a regularização o quanto antes — a partir de agora, o caso também é "
+        "acompanhado diretamente pela gestão do imóvel."
+    ),
+}
+
+
+def renderizar_template_cobranca(mensagem: MensagemTemplate) -> str:
+    """Texto do template já com os parâmetros no lugar, pra gravar em
+    conversation_logs. Template desconhecido cai num formato
+    `[nome] p1 | p2` — nunca levanta, o log não pode quebrar o envio."""
+    corpo = _CORPOS_TEMPLATE_COBRANCA.get(mensagem.nome)
+    if corpo is None:
+        return f"[{mensagem.nome}] " + " | ".join(mensagem.parametros)
+    for indice, parametro in enumerate(mensagem.parametros, start=1):
+        corpo = corpo.replace("{{" + str(indice) + "}}", parametro)
+    return corpo
+
+
 def _formatar_valor_template(valor: float) -> str:
     """Formata moeda brasileira sem ``R$`` (o corpo Meta já inclui o rótulo)."""
     formato_internacional = f"{valor:,.2f}"
