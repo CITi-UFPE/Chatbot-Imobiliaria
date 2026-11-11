@@ -200,9 +200,24 @@ function mesComMaisDiasNoPeriodo(periodoInicioISO: string, periodoFimISO: string
   return mesEscolhido; // "YYYY-MM"
 }
 
+// Limita o dia ao último dia do mês (dia 31 em fevereiro vira 28/29), igual ao
+// backend em app/agents/a2_cobranca/geracao.py — senão sairia uma data
+// inexistente (ex.: 2026-02-31) que o banco rejeita.
 function dataVencimentoDoMes(diaVencimento: number, mesReferenciaISO: string): string {
   const [ano, mes] = mesReferenciaISO.split("-");
-  return `${ano}-${mes}-${String(diaVencimento).padStart(2, "0")}`;
+  const ultimoDiaDoMes = new Date(Number(ano), Number(mes), 0).getDate();
+  const dia = Math.min(diaVencimento, ultimoDiaDoMes);
+  return `${ano}-${mes}-${String(dia).padStart(2, "0")}`;
+}
+
+// "Hoje" no calendário LOCAL (YYYY-MM-DD). new Date().toISOString() é UTC e, à
+// noite no Brasil, já devolve o dia seguinte — mesma correção de
+// CobrancasSection.tsx:hojeISO.
+function hojeISO(): string {
+  const agora = new Date();
+  const mes = String(agora.getMonth() + 1).padStart(2, "0");
+  const dia = String(agora.getDate()).padStart(2, "0");
+  return `${agora.getFullYear()}-${mes}-${dia}`;
 }
 
 // Avança um mês de referência no formato "YYYY-MM".
@@ -289,6 +304,13 @@ export function ComprovanteAguaUpload() {
   const [contaVencidaPendente, setContaVencidaPendente] = useState<{ dataVencimento: string } | null>(
     null,
   );
+  // Data de vencimento digitada pelo usuário, guardada junto do contrato para o
+  // qual foi digitada: trocar de contrato descarta a edição (o dia de
+  // vencimento muda por contrato) e volta a valer a data sugerida.
+  const [dataVencimentoManual, setDataVencimentoManual] = useState<{
+    contratoId: string;
+    data: string;
+  } | null>(null);
 
   const { data: contratosAtivos = [] } = useQuery({
     queryKey: CONTRATOS_ATIVOS_QUERY_KEY,
@@ -296,6 +318,22 @@ export function ComprovanteAguaUpload() {
   });
 
   const contratoSelecionado = contratosAtivos.find((c) => c.id === contratoSelecionadoId) ?? null;
+
+  // Sugerida = a mesma regra de sempre (dia de vencimento do contrato + ajuste do
+  // mês de referência). Vazia enquanto faltar contrato, mês ou fim do período.
+  const dataVencimentoSugerida =
+    contratoSelecionado && campos.mesReferencia && campos.periodoFim
+      ? resolverMesReferenciaEVencimento(
+          campos.mesReferencia,
+          campos.periodoFim,
+          contratoSelecionado.dia_vencimento,
+        ).dataVencimento
+      : "";
+  const dataVencimentoEditada =
+    dataVencimentoManual !== null && dataVencimentoManual.contratoId === contratoSelecionadoId;
+  const dataVencimentoEfetiva = dataVencimentoEditada
+    ? dataVencimentoManual.data
+    : dataVencimentoSugerida;
 
   const resetar = () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -317,6 +355,7 @@ export function ComprovanteAguaUpload() {
     setModoBuscaManual(false);
     setContratoSelecionadoId(null);
     setContaVencidaPendente(null);
+    setDataVencimentoManual(null);
   };
 
   const handleFile = (f: File | null) => {
@@ -377,6 +416,7 @@ export function ComprovanteAguaUpload() {
       setModoBuscaManual(cenarioDetectado === "lista_completa");
       setContratoSelecionadoId(cenarioDetectado === "confiavel" ? ordenados[0]?.contractId ?? null : null);
       setBuscaManual("");
+      setDataVencimentoManual(null);
       setStep(2);
     } catch (error) {
       console.error("Erro ao processar conta de água:", error);
@@ -394,12 +434,16 @@ export function ComprovanteAguaUpload() {
       if (!campos.valorTotal || campos.valorTotal <= 0) throw new Error("Informe um valor válido");
       if (!campos.mesReferencia) throw new Error("Informe o mês de referência");
       if (!campos.periodoFim) throw new Error("Informe o fim do período de leitura");
+      if (!dataVencimentoEfetiva) throw new Error("Informe a data de vencimento");
 
-      const { mesReferencia: mesReferenciaAjustado, dataVencimento } = resolverMesReferenciaEVencimento(
+      // O mês de referência segue a regra de sempre (período lido + ajuste);
+      // só a data de vencimento pode ter sido editada pelo usuário.
+      const { mesReferencia: mesReferenciaAjustado } = resolverMesReferenciaEVencimento(
         campos.mesReferencia,
         campos.periodoFim,
         contratoSelecionado.dia_vencimento,
       );
+      const dataVencimento = dataVencimentoEfetiva;
       const mesReferencia = `${mesReferenciaAjustado}-01`;
 
       // Quando o usuário confirma o lançamento de uma conta já vencida (ver
@@ -407,7 +451,7 @@ export function ComprovanteAguaUpload() {
       // o atraso já existente no momento do lançamento, não é recalculado depois.
       const diasAtraso =
         opts.statusForcado === "atrasado"
-          ? Math.max(0, diferencaEmDias(dataVencimento, new Date().toISOString().slice(0, 10)))
+          ? Math.max(0, diferencaEmDias(dataVencimento, hojeISO()))
           : 0;
 
       // Grava apenas a cobrança esperada do mês, com base na leitura da
@@ -448,26 +492,20 @@ export function ComprovanteAguaUpload() {
     },
   });
 
-  // Verificação de conta vencida: primeiro resolve o mês de referência real
-  // (empurrando pro mês seguinte se a leitura terminar depois do vencimento
-  // do mês detectado — ver resolverMesReferenciaEVencimento), e só então
-  // compara com hoje. Se ainda assim já passou, abre o AlertDialog e espera
-  // a decisão do usuário em vez de gravar de imediato.
+  // Verificação de conta vencida: compara a data de vencimento efetiva — a
+  // sugerida pelo contrato (com o ajuste de mês de referência, ver
+  // resolverMesReferenciaEVencimento) ou a que o usuário digitou — com hoje.
+  // Se já passou, abre o AlertDialog e espera a decisão do usuário em vez de
+  // gravar de imediato. Campo faltando cai direto na mutation, que mostra o
+  // erro de validação.
   const handleConfirmarClick = () => {
-    if (!contratoSelecionado || !campos.mesReferencia || !campos.periodoFim) {
+    if (!contratoSelecionado || !campos.mesReferencia || !campos.periodoFim || !dataVencimentoEfetiva) {
       confirmarMutation.mutate({});
       return;
     }
 
-    const { dataVencimento } = resolverMesReferenciaEVencimento(
-      campos.mesReferencia,
-      campos.periodoFim,
-      contratoSelecionado.dia_vencimento,
-    );
-    const hojeISO = new Date().toISOString().slice(0, 10);
-
-    if (dataVencimento < hojeISO) {
-      setContaVencidaPendente({ dataVencimento });
+    if (dataVencimentoEfetiva < hojeISO()) {
+      setContaVencidaPendente({ dataVencimento: dataVencimentoEfetiva });
       return;
     }
 
@@ -612,6 +650,41 @@ export function ComprovanteAguaUpload() {
                     value={campos.mesReferencia}
                     onChange={(e) => setCampos((p) => ({ ...p, mesReferencia: e.target.value }))}
                   />
+                </FieldAgua>
+                <FieldAgua label="Data de vencimento">
+                  <Input
+                    type="date"
+                    value={dataVencimentoEfetiva}
+                    disabled={!contratoSelecionado}
+                    onChange={(e) =>
+                      contratoSelecionado &&
+                      setDataVencimentoManual({ contratoId: contratoSelecionado.id, data: e.target.value })
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {!contratoSelecionado ? (
+                      "Selecione o contrato para ver a data sugerida."
+                    ) : dataVencimentoSugerida ? (
+                      <>
+                        Sugerida pelo contrato (dia {contratoSelecionado.dia_vencimento}):{" "}
+                        {formatarDataBR(dataVencimentoSugerida)}.
+                        {dataVencimentoEditada && dataVencimentoEfetiva !== dataVencimentoSugerida && (
+                          <>
+                            {" "}
+                            <button
+                              type="button"
+                              onClick={() => setDataVencimentoManual(null)}
+                              className="underline underline-offset-2 hover:text-foreground"
+                            >
+                              Restaurar sugestão
+                            </button>
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      "Preencha o mês de referência e o fim do período para ver a data sugerida."
+                    )}
+                  </p>
                 </FieldAgua>
               </div>
 
