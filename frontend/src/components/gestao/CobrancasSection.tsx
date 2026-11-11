@@ -214,11 +214,18 @@ function calcularValorFinal(
   return Math.round(valorBruto * 100) / 100;
 }
 
+// Tipos de cobrança que NÃO sofrem multa/juros por enquanto — mesma regra de
+// app/agents/a2_cobranca/mensagens.py:TIPOS_SEM_ENCARGOS (pedido do cliente em
+// 30/10 e 11/11/2026: conta de água não é ajustada até existir a opção por
+// conta "aplicar multa e juros"). Manter as duas em sincronia; quando a opção
+// existir, este guard sai e a decisão passa a vir da própria charge.
+const TIPOS_SEM_ENCARGOS = ["agua"];
+
 async function fetchAtrasadas(): Promise<Atraso[]> {
   const { data, error } = await supabase
     .from("charges")
     .select(
-      "id, contract_id, mes_referencia, valor_esperado, dias_atraso, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp, multa_moratoria_percentual, juros_moratorio_mensal)",
+      "id, contract_id, tipo, mes_referencia, valor_esperado, dias_atraso, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp, multa_moratoria_percentual, juros_moratorio_mensal)",
     )
     .eq("status", "atrasado")
     .order("dias_atraso", { ascending: false });
@@ -237,12 +244,14 @@ async function fetchAtrasadas(): Promise<Atraso[]> {
       mes: formatarMesReferencia(row.mes_referencia),
       diasAtraso,
       valorInicial: valorEsperado,
-      valorFinal: calcularValorFinal(
-        valorEsperado,
-        diasAtraso,
-        row.contracts?.multa_moratoria_percentual ?? null,
-        row.contracts?.juros_moratorio_mensal ?? 0,
-      ),
+      valorFinal: TIPOS_SEM_ENCARGOS.includes(row.tipo)
+        ? valorEsperado
+        : calcularValorFinal(
+            valorEsperado,
+            diasAtraso,
+            row.contracts?.multa_moratoria_percentual ?? null,
+            row.contracts?.juros_moratorio_mensal ?? 0,
+          ),
     };
   });
 }
