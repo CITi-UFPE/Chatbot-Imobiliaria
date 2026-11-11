@@ -50,7 +50,7 @@ from app.agents.a1_atendimento.schemas import (
     StatusCobrancaContrato,
 )
 from app.tools.calculo_reajuste import INDICES_COM_CALCULO_AUTOMATICO, proximo_aniversario_contrato
-from app.agents.a2_cobranca.mensagens import calcular_encargos
+from app.agents.a2_cobranca.mensagens import TIPOS_SEM_ENCARGOS, calcular_encargos
 from app.agents.a5_escalonamento import (
     AvaliacaoEscalonamento,
     avaliar_escalonamento,
@@ -212,8 +212,10 @@ hoje e que os juros continuam correndo até o pagamento. Não refaça essa conta
 Isso é só informação sobre a cobrança que já existe — não é uma nova cobrança nem uma
 proposta: você não altera, parcela, negocia nem perdoa valores (se o inquilino pedir
 isso, é pedido de desconto/renegociação, ver PROJEÇÃO DE ENCARGOS POR ATRASO acima).
-Se esses campos não vierem numa cobrança atrasada, informe só o valor original e diga que
-multa e juros por atraso se aplicam conforme o contrato, sem inventar um número. Para
+Cobranças de água atrasadas NÃO recebem multa nem juros: informe só o valor original e
+não diga que há encargos por atraso nelas.
+Se esses campos não vierem numa cobrança de aluguel atrasada, informe só o valor original e
+diga que multa e juros por atraso se aplicam conforme o contrato, sem inventar um número. Para
 cobranças em negociação, não fale em multa/juros — isso está sendo tratado pela equipe.
 
 'charges_pagas_ultimos_30_dias' cobre APENAS cobranças com pagamento identificado nos
@@ -405,7 +407,11 @@ def _adicionar_encargos_charges_atrasadas(client, contract_id: str, charges_aber
     'pendente'. Os campos são acrescentados DEPOIS da validação Pydantic,
     então não mudam o contrato da RPC. Falha ao ler multa/juros do contrato
     não derruba a tool: o inquilino ainda recebe o status das cobranças."""
-    atrasadas = [c for c in charges_abertas if c["status"] == "atrasado" and c["dias_atraso"] > 0]
+    atrasadas = [
+        c
+        for c in charges_abertas
+        if c["status"] == "atrasado" and c["dias_atraso"] > 0 and c["tipo"] not in TIPOS_SEM_ENCARGOS
+    ]
     if not atrasadas:
         return
 

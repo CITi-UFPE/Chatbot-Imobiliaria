@@ -60,6 +60,28 @@ def calcular_encargos(
     return round(valor_multa, 2), round(valor_juros, 2), round(valor_total, 2)
 
 
+# Tipos de cobrança que NÃO sofrem multa/juros por enquanto. Pedido do cliente
+# (30/10 e 11/11/2026): conta de água não é ajustada até existir a opção por
+# conta "aplicar multa e juros". Quando ela entrar, este guard sai e a decisão
+# passa a vir da própria charge.
+TIPOS_SEM_ENCARGOS: frozenset[str] = frozenset({"agua"})
+
+
+def encargos_da_cobranca(
+    tipo: str,
+    valor_esperado: float,
+    dias_atraso: int,
+    multa_moratoria_percentual: float | None,
+    juros_moratorio_mensal: float,
+) -> tuple[float, float, float]:
+    """calcular_encargos, exceto pra tipos em TIPOS_SEM_ENCARGOS: multa e juros
+    zerados e total igual ao valor original. Todo ponto que mostra valor
+    atualizado de uma cobrança deve passar por aqui, não por calcular_encargos."""
+    if tipo in TIPOS_SEM_ENCARGOS:
+        return 0.0, 0.0, round(valor_esperado, 2)
+    return calcular_encargos(valor_esperado, dias_atraso, multa_moratoria_percentual, juros_moratorio_mensal)
+
+
 def _montar_mensagem_aluguel(
     charge: ChargeAtiva, dados: DadosCobrancaContrato, estagio: EstagioCobranca, dias_atraso: int
 ) -> str:
@@ -153,28 +175,37 @@ def _montar_mensagem_conta(
             f"Assim que pagar, envie o comprovante por aqui."
         )
 
-    valor_multa, valor_juros, valor_total = calcular_encargos(
-        charge.valor_esperado, dias_atraso, dados.multa_moratoria_percentual, dados.juros_moratorio_mensal
+    _, _, valor_total = encargos_da_cobranca(
+        charge.tipo,
+        charge.valor_esperado,
+        dias_atraso,
+        dados.multa_moratoria_percentual,
+        dados.juros_moratorio_mensal,
     )
+    # Sem encargos o valor é o original — dizer "atualizado com encargos"
+    # seria afirmar uma cobrança extra que não existe.
+    sem_encargos = charge.tipo in TIPOS_SEM_ENCARGOS
+    rotulo_valor = "Valor" if sem_encargos else "Valor atualizado"
+    rotulo_valor_d5 = "Valor" if sem_encargos else "Valor atualizado com encargos"
 
     if estagio == "d+5":
         return (
             f"Olá, {nome}. Não identificamos o pagamento da conta de {rotulo} "
-            f"(vencimento {data_venc_fmt}). Valor atualizado com encargos: R$ {valor_total:.2f}. "
+            f"(vencimento {data_venc_fmt}). {rotulo_valor_d5}: R$ {valor_total:.2f}. "
             f"Pode enviar o comprovante assim que possível?"
         )
 
     if estagio == "d+10":
         return (
             f"Olá, {nome}. A conta de {rotulo} (vencimento {data_venc_fmt}) segue em "
-            f"aberto há {dias_atraso} dias. Valor atualizado: R$ {valor_total:.2f}. "
+            f"aberto há {dias_atraso} dias. {rotulo_valor}: R$ {valor_total:.2f}. "
             f"Pedimos a regularização o quanto antes."
         )
 
     # d+15
     return (
         f"Olá, {nome}. A conta de {rotulo} (vencimento {data_venc_fmt}) está em aberto há "
-        f"{dias_atraso} dias, sem comprovante recebido. Valor atualizado: R$ {valor_total:.2f}. "
+        f"{dias_atraso} dias, sem comprovante recebido. {rotulo_valor}: R$ {valor_total:.2f}. "
         f"A partir de agora, a gestão do imóvel também acompanha este caso."
     )
 
@@ -262,7 +293,8 @@ def montar_template_cobranca(
             parametros=(nome, descricao, vencimento),
         )
 
-    valor_multa, valor_juros, valor_total = calcular_encargos(
+    valor_multa, valor_juros, valor_total = encargos_da_cobranca(
+        charge.tipo,
         charge.valor_esperado,
         dias_atraso,
         dados.multa_moratoria_percentual,

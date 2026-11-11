@@ -287,6 +287,40 @@ def test_charge_pendente_e_em_negociacao_nao_recebem_encargos():
     assert "buscar_dados_inquilino" not in nomes_rpc
 
 
+def test_charge_de_agua_atrasada_nao_recebe_encargos():
+    """Cliente pediu (11/11/2026): conta de água não é ajustada até a opção por
+    conta existir. O aluguel atrasado do mesmo contrato segue com encargos."""
+    agua = {**_charge_aberta("atrasado", 32, "c-agua"), "tipo": "agua", "valor_esperado": 300.0}
+    client = _client_fake_por_rpc(
+        {
+            "charges_abertas": [agua, _charge_aberta("atrasado", 32, "c-aluguel")],
+            "charges_pagas_ultimos_30_dias": [],
+        },
+        {"multa_moratoria_percentual": 0.02, "juros_moratorio_mensal": 0.01},
+    )
+
+    abertas = {c["charge_id"]: c for c in _executar_com(client)["charges_abertas"]}
+
+    for campo in ("valor_multa", "valor_juros", "valor_atualizado"):
+        assert campo not in abertas["c-agua"]
+    assert abertas["c-aluguel"]["valor_atualizado"] == 4431.87
+
+
+def test_so_agua_atrasada_nao_busca_dados_do_contrato():
+    client = _client_fake_por_rpc(
+        {
+            "charges_abertas": [{**_charge_aberta("atrasado", 32), "tipo": "agua"}],
+            "charges_pagas_ultimos_30_dias": [],
+        },
+        {"multa_moratoria_percentual": 0.02, "juros_moratorio_mensal": 0.01},
+    )
+
+    _executar_com(client)
+
+    nomes_rpc = [c.args[0] for c in client.rpc.call_args_list]
+    assert "buscar_dados_inquilino" not in nomes_rpc
+
+
 def test_multa_nula_no_contrato_calcula_so_juros():
     client = _client_fake_por_rpc(
         {"charges_abertas": [_charge_aberta("atrasado", 30)], "charges_pagas_ultimos_30_dias": []},
