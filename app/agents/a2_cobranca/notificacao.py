@@ -50,6 +50,8 @@ from app.agents.a2_cobranca.button_ids import (
     montar_button_id_divergente,
 )
 from app.tools import whatsapp_client
+from app.tools.conversation_log import registrar_se_enviado
+from app.tools.whatsapp_client import ResultadoEnvio
 from app.tools.whatsapp_message_policy import (
     BotaoTemplateQuickReply,
     MensagemTemplate,
@@ -87,14 +89,14 @@ def _logar_falha_envio(operacao: str, telefone: str, erro: Exception) -> None:
     )
 
 
-def _enviar_com_log(operacao: str, telefone: str, enviar) -> None:
+def _enviar_com_log(operacao: str, telefone: str, enviar):
     """Chama `enviar` (uma lambda/closure sem argumentos, já fechada sobre
     os parâmetros reais do envio) e, se falhar, loga via _logar_falha_envio
     ANTES de repropagar. Toda função deste módulo que envia algo pelo
     whatsapp_client usa este helper — antes cada uma repetia o mesmo
     try/except-log-reraise na mão."""
     try:
-        enviar()
+        return enviar()
     except Exception as erro:
         _logar_falha_envio(operacao, telefone, erro)
         raise
@@ -147,11 +149,15 @@ def _formatar_data_br(valor: object) -> str:
 def enviar_mensagem_cobranca(
     telefone_whatsapp: str,
     mensagem: MensagemTemplate,
-) -> None:
+) -> ResultadoEnvio:
     """Envia a mensagem de cobrança D-5/D0/D+5/D+10/D+15 — disparada pelo
-    cron diário, portanto sempre proativa e já estruturada como template."""
+    cron diário, portanto sempre proativa e já estruturada como template.
+
+    Devolve o ResultadoEnvio pra quem chama distinguir envio real de envio
+    simulado (kill switch WHATSAPP_ENVIO_ATIVO desligado): no simulado nada
+    saiu pro inquilino, então o cron não pode marcar o estágio como avisado."""
     try:
-        enviar_saida(telefone_whatsapp, mensagem)
+        return enviar_saida(telefone_whatsapp, mensagem)
     except Exception as erro:
         _logar_falha_envio("enviar_mensagem_cobranca", telefone_whatsapp, erro)
         raise
@@ -420,8 +426,17 @@ def responder_confirmacao_pagamento(
             parametros=(nome_inquilino,),
         ),
     )
-    _enviar_com_log(
+    resultado = _enviar_com_log(
         "responder_confirmacao_pagamento",
         telefone_whatsapp,
         lambda: enviar_saida(telefone_whatsapp, saida),
+    )
+    # Grava o texto da confirmação mesmo quando a saída foi o template (janela
+    # de 24h fechada): é o que o inquilino ficou sabendo.
+    registrar_se_enviado(
+        resultado,
+        client_agente,
+        agente="A2",
+        mensagem=texto,
+        contexto="confirmação de pagamento",
     )

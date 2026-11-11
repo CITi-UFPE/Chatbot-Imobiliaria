@@ -269,7 +269,7 @@ def test_cron_a2_entrega_template_estruturado_ao_notificador(dados_cobranca):
         builder = MagicMock()
         if nome == "buscar_dados_cobranca_contrato":
             builder.execute.return_value = MagicMock(data=dados_cobranca.model_dump())
-        elif nome == "agent_update_charge_status":
+        elif nome in ("agent_update_charge_status", "agent_log_message"):
             builder.execute.return_value = MagicMock(data=None)
         else:
             raise AssertionError(f"RPC inesperada: {nome}")

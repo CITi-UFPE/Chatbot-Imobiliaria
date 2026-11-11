@@ -340,7 +340,7 @@ def test_identificar_contrato_falha_nao_propaga(monkeypatch, staff_configurada):
 
 def test_escalonamento_ja_resolvido_nao_reenvia(monkeypatch, staff_configurada):
     monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
-    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: object())
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: MagicMock())
     monkeypatch.setattr(pm, "obter_escalonamento_aberto", lambda client, wamid: None)
     chamadas_texto = []
     monkeypatch.setattr(
@@ -363,7 +363,7 @@ _ESCALONAMENTO_ABERTO = {
 
 def test_fluxo_completo_repassa_resposta_ao_inquilino_e_marca_resolvido(monkeypatch, staff_configurada):
     monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
-    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: object())
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: MagicMock())
     monkeypatch.setattr(
         pm, "obter_escalonamento_aberto", lambda client, wamid: dict(_ESCALONAMENTO_ABERTO)
     )
@@ -405,7 +405,7 @@ class _ClientJanelaFechada:
     decidir_saida_para_contrato nesse caminho."""
 
     def rpc(self, nome, params):
-        assert nome == "agent_get_last_tenant_message_at"
+        assert nome in ("agent_get_last_tenant_message_at", "agent_log_message")
         return self
 
     def execute(self):
@@ -446,7 +446,7 @@ def test_janela_fechada_no_reply_da_gestora_preserva_o_conteudo_da_resposta(
 
 def test_falha_ao_enviar_ao_inquilino_nao_marca_resolvido(monkeypatch, staff_configurada):
     monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
-    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: object())
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: MagicMock())
     monkeypatch.setattr(
         pm, "obter_escalonamento_aberto", lambda client, wamid: dict(_ESCALONAMENTO_ABERTO)
     )
@@ -478,7 +478,7 @@ def test_falha_ao_enviar_ao_inquilino_nao_marca_resolvido(monkeypatch, staff_con
 
 def test_composicao_falha_nao_tenta_enviar_ao_inquilino(monkeypatch, staff_configurada):
     monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
-    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: object())
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: MagicMock())
     monkeypatch.setattr(
         pm, "obter_escalonamento_aberto", lambda client, wamid: dict(_ESCALONAMENTO_ABERTO)
     )
@@ -505,7 +505,7 @@ def test_modo_simulado_nao_dispara_nenhum_envio_real(monkeypatch, staff_configur
     """dev_chat (responder_via_whatsapp=False): nem o inquilino nem a staff
     recebem mensagem real — só devolve o que teria sido mandado."""
     monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
-    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: object())
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: MagicMock())
     monkeypatch.setattr(
         pm, "obter_escalonamento_aberto", lambda client, wamid: dict(_ESCALONAMENTO_ABERTO)
     )
@@ -523,3 +523,45 @@ def test_modo_simulado_nao_dispara_nenhum_envio_real(monkeypatch, staff_configur
     assert "Não." in resposta
     assert enviados_inquilino == []
     assert chamadas_texto_staff == []
+
+
+def test_resposta_da_gestora_ao_inquilino_e_gravada_em_conversation_logs(monkeypatch, staff_configurada):
+    client = MagicMock()
+    monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: client)
+    monkeypatch.setattr(
+        pm, "obter_escalonamento_aberto", lambda client, wamid: dict(_ESCALONAMENTO_ABERTO)
+    )
+    monkeypatch.setattr(pm, "compor_resposta_inquilino", lambda pergunta, resposta: "Pode sim.")
+    monkeypatch.setattr(pm, "marcar_resolvido", lambda client, protocolo: True)
+    monkeypatch.setattr(pm, "enviar_saida", lambda tel, saida: pm.whatsapp_client.ResultadoEnvio(
+        sucesso=True, simulado=False, message_id="wamid.X"
+    ))
+    monkeypatch.setattr(pm.whatsapp_client, "enviar_texto", lambda tel, txt: None)
+
+    pm.processar_mensagem_recebida(_payload_reply_staff(texto="pode"), responder_via_whatsapp=True)
+
+    client.rpc.assert_any_call(
+        "agent_log_message",
+        {"p_remetente": "agente", "p_agente_responsavel": "A5", "p_mensagem": "Pode sim."},
+    )
+
+
+def test_resposta_da_gestora_em_envio_simulado_nao_grava_log(monkeypatch, staff_configurada):
+    client = MagicMock()
+    monkeypatch.setattr(pm, "identificar_contrato_por_wamid", lambda wamid: "contract-1")
+    monkeypatch.setattr(pm, "obter_client_agente", lambda cid: client)
+    monkeypatch.setattr(
+        pm, "obter_escalonamento_aberto", lambda client, wamid: dict(_ESCALONAMENTO_ABERTO)
+    )
+    monkeypatch.setattr(pm, "compor_resposta_inquilino", lambda pergunta, resposta: "Pode sim.")
+    monkeypatch.setattr(pm, "marcar_resolvido", lambda client, protocolo: True)
+    monkeypatch.setattr(
+        pm, "enviar_saida", lambda tel, saida: pm.whatsapp_client.ResultadoEnvio(sucesso=True, simulado=True)
+    )
+    monkeypatch.setattr(pm.whatsapp_client, "enviar_texto", lambda tel, txt: None)
+
+    pm.processar_mensagem_recebida(_payload_reply_staff(texto="pode"), responder_via_whatsapp=True)
+
+    nomes_rpc = [c.args[0] for c in client.rpc.call_args_list]
+    assert "agent_log_message" not in nomes_rpc
