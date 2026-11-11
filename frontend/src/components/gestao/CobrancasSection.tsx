@@ -122,6 +122,7 @@ interface Atraso {
   imovel: string;
   telefone: string | null;
   mes: string;
+  dataVencimento: string; // ISO (yyyy-mm-dd)
   diasAtraso: number;
   valorInicial: number;
   valorFinal: number;
@@ -225,7 +226,7 @@ async function fetchAtrasadas(): Promise<Atraso[]> {
   const { data, error } = await supabase
     .from("charges")
     .select(
-      "id, contract_id, tipo, mes_referencia, valor_esperado, dias_atraso, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp, multa_moratoria_percentual, juros_moratorio_mensal)",
+      "id, contract_id, tipo, mes_referencia, valor_esperado, data_vencimento, dias_atraso, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp, multa_moratoria_percentual, juros_moratorio_mensal)",
     )
     .eq("status", "atrasado")
     .order("dias_atraso", { ascending: false });
@@ -242,6 +243,7 @@ async function fetchAtrasadas(): Promise<Atraso[]> {
       imovel: row.contracts?.imovel_endereco ?? "—",
       telefone: row.contracts?.telefone_whatsapp ?? null,
       mes: formatarMesReferencia(row.mes_referencia),
+      dataVencimento: row.data_vencimento,
       diasAtraso,
       valorInicial: valorEsperado,
       valorFinal: TIPOS_SEM_ENCARGOS.includes(row.tipo)
@@ -293,12 +295,20 @@ function AtrasoCard({
   form,
   onChangeForm,
   onMarcarPago,
+  novaDataVencimento,
+  onChangeNovaDataVencimento,
+  isPendingVencimento,
+  onAlterarVencimento,
 }: {
   n: Atraso;
   isPending: boolean;
   form: PagamentoFormState;
   onChangeForm: (patch: Partial<PagamentoFormState>) => void;
   onMarcarPago: () => void;
+  novaDataVencimento: string;
+  onChangeNovaDataVencimento: (data: string) => void;
+  isPendingVencimento: boolean;
+  onAlterarVencimento: () => void;
 }) {
   const valorInvalido = form.valorPago !== "" && Number(form.valorPago) <= 0;
 
@@ -317,10 +327,14 @@ function AtrasoCard({
         </Badge>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
           <div>
             <div className="text-xs uppercase text-muted-foreground">Mês de Referência</div>
             <div className="font-medium">{n.mes}</div>
+          </div>
+          <div>
+            <div className="text-xs uppercase text-muted-foreground">Vencimento</div>
+            <div className="font-medium tnum">{formatarDataVencimento(n.dataVencimento)}</div>
           </div>
           <div>
             <div className="text-xs uppercase text-muted-foreground">Valor Original</div>
@@ -363,6 +377,28 @@ function AtrasoCard({
             disabled={isPending || !form.dataPagamento || !form.valorPago || valorInvalido}
           >
             {isPending ? "Confirmando..." : "Marcar como Pago"}
+          </Button>
+        </div>
+
+        <div className="grid sm:grid-cols-[1fr,auto] gap-3 items-end pt-2 border-t">
+          <div className="space-y-1.5">
+            <Label>Novo Vencimento</Label>
+            <Input
+              type="date"
+              value={novaDataVencimento}
+              onChange={(e) => onChangeNovaDataVencimento(e.target.value)}
+            />
+          </div>
+          <Button
+            variant="outline"
+            onClick={onAlterarVencimento}
+            disabled={
+              isPendingVencimento ||
+              !novaDataVencimento ||
+              novaDataVencimento === n.dataVencimento
+            }
+          >
+            {isPendingVencimento ? "Alterando..." : "Alterar Vencimento"}
           </Button>
         </div>
       </CardContent>
@@ -489,6 +525,10 @@ export function CobrancasSection() {
   const [pagamentoFormsPendentes, setPagamentoFormsPendentes] = useState<
     Record<string, PagamentoFormState>
   >({});
+  // Novo vencimento digitado em cada card de atraso (chargeId -> data ISO). O
+  // default (a data atual da cobrança) é aplicado sob demanda em
+  // getNovaDataVencimento, não aqui.
+  const [novasDatasVencimento, setNovasDatasVencimento] = useState<Record<string, string>>({});
 
   // Controla individualmente se cada uma das 4 seções está aberta ou
   // fechada — todas começam abertas.
@@ -543,6 +583,9 @@ export function CobrancasSection() {
       ...prev,
       [n.chargeId]: { ...getPagamentoForm(n), ...patch },
     }));
+
+  const getNovaDataVencimento = (n: Atraso): string =>
+    novasDatasVencimento[n.chargeId] ?? n.dataVencimento;
 
   // Mesmo padrão do getPagamentoForm/updatePagamentoForm de atrasadas,
   // mas com estado separado (pagamentoFormsPendentes) — aqui o default do
@@ -734,6 +777,50 @@ export function CobrancasSection() {
       dataPagamento: form.dataPagamento,
       valorPago,
     });
+  };
+
+  // Alterar o vencimento de uma cobrança atrasada (pedido do cliente,
+  // 30/10/2026). Passa pela RPC alterar_vencimento_charge (Migration 027):
+  // ela troca a data, recalcula dias_atraso/status e grava a auditoria na mesma
+  // transação. Data nova futura devolve a cobrança pra 'pendente' (sai de
+  // atrasadas, entra em pendentes), por isso as duas queries são invalidadas.
+  // mensagem_estagio não é tocado — o cron retoma os lembretes pela nova data.
+  const alterarVencimentoMutation = useMutation({
+    mutationFn: async ({ chargeId, novaData }: { chargeId: string; novaData: string }) => {
+      const { data, error } = await supabase.rpc("alterar_vencimento_charge", {
+        p_charge_id: chargeId,
+        p_nova_data: novaData,
+      });
+      if (error) throw error;
+      return data as { status: string; dias_atraso: number };
+    },
+    onSuccess: (resultado, variables) => {
+      toast.success(`Vencimento alterado para ${formatarDataVencimento(variables.novaData)}`, {
+        description:
+          resultado.status === "pendente"
+            ? "A cobrança saiu das atrasadas e voltou para pendentes."
+            : "A cobrança continua em atraso, com os dias recalculados.",
+      });
+      setNovasDatasVencimento((prev) => {
+        const { [variables.chargeId]: _removida, ...resto } = prev;
+        return resto;
+      });
+      queryClient.invalidateQueries({ queryKey: ATRASADAS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: PENDENTES_QUERY_KEY });
+    },
+    onError: (error: Error) => {
+      console.error("Erro ao alterar vencimento:", error);
+      toast.error(error.message || "Não foi possível alterar o vencimento. Tente novamente.");
+    },
+  });
+
+  const handleAlterarVencimento = (n: Atraso) => {
+    const novaData = getNovaDataVencimento(n);
+    if (!novaData || novaData === n.dataVencimento) {
+      toast.error("Informe uma data de vencimento diferente da atual.");
+      return;
+    }
+    alterarVencimentoMutation.mutate({ chargeId: n.chargeId, novaData });
   };
 
   // Resolução manual pra charges ainda não vencidas/atrasadas — mesmo
@@ -1008,6 +1095,15 @@ export function CobrancasSection() {
               form={getPagamentoForm(n)}
               onChangeForm={(patch) => updatePagamentoForm(n, patch)}
               onMarcarPago={() => handleMarcarPago(n)}
+              novaDataVencimento={getNovaDataVencimento(n)}
+              onChangeNovaDataVencimento={(data) =>
+                setNovasDatasVencimento((prev) => ({ ...prev, [n.chargeId]: data }))
+              }
+              isPendingVencimento={
+                alterarVencimentoMutation.isPending &&
+                alterarVencimentoMutation.variables?.chargeId === n.chargeId
+              }
+              onAlterarVencimento={() => handleAlterarVencimento(n)}
             />
           ))}
           {!isLoadingAtrasadas && atrasadasLeves.length === 0 && (
@@ -1061,6 +1157,15 @@ export function CobrancasSection() {
               form={getPagamentoForm(n)}
               onChangeForm={(patch) => updatePagamentoForm(n, patch)}
               onMarcarPago={() => handleMarcarPago(n)}
+              novaDataVencimento={getNovaDataVencimento(n)}
+              onChangeNovaDataVencimento={(data) =>
+                setNovasDatasVencimento((prev) => ({ ...prev, [n.chargeId]: data }))
+              }
+              isPendingVencimento={
+                alterarVencimentoMutation.isPending &&
+                alterarVencimentoMutation.variables?.chargeId === n.chargeId
+              }
+              onAlterarVencimento={() => handleAlterarVencimento(n)}
             />
           ))}
           {!isLoadingAtrasadas && atrasadasCriticas.length === 0 && (

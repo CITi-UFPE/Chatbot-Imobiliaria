@@ -62,9 +62,12 @@ export interface ChargeRow {
   dias_atraso: number;
   status: ChargeStatus;
   comprovante_url: string | null;
+  mensagem_estagio: ChargeMensagemEstagio | null;
   created_at: string;
   updated_at: string;
 }
+
+export type ChargeMensagemEstagio = "d-5" | "d0" | "d+5" | "d+10" | "d+15";
 
 export type TipoResolucaoNegociacao = "perdao_total" | "desconto_parcial" | "negado";
 
@@ -75,6 +78,19 @@ export interface ChargeNegotiationRow {
   valor_negociado: number | null;
   decidido_por_user_id: string;
   data_decisao: string | null;
+  created_at: string;
+}
+
+// Trilha de auditoria de alterar_vencimento_charge (Migration 027). Só a RPC
+// grava; a staff só lê.
+export interface ChargeVencimentoChangeRow {
+  id: string;
+  charge_id: string;
+  data_anterior: string; // date
+  data_nova: string; // date
+  status_anterior: ChargeStatus;
+  status_novo: ChargeStatus;
+  alterado_por_user_id: string;
   created_at: string;
 }
 
