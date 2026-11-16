@@ -63,6 +63,9 @@ export interface ChargeRow {
   status: ChargeStatus;
   comprovante_url: string | null;
   mensagem_estagio: ChargeMensagemEstagio | null;
+  // true/false = escolha da equipe sobre multa e juros; null = padrão do tipo
+  // (água sem encargos, aluguel com). Migration 028.
+  aplicar_encargos: boolean | null;
   created_at: string;
   updated_at: string;
 }

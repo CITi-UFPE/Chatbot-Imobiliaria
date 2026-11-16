@@ -7,6 +7,7 @@ import { StatTile } from "./StatTile";
 import { Avatar } from "./Avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -118,6 +119,7 @@ interface Negociacao {
 interface Atraso {
   chargeId: string;
   contractId: string;
+  tipo: string;
   inquilino: string;
   imovel: string;
   telefone: string | null;
@@ -126,6 +128,7 @@ interface Atraso {
   diasAtraso: number;
   valorInicial: number;
   valorFinal: number;
+  cobraEncargos: boolean; // já resolvido: escolha da charge ou padrão do tipo
 }
 
 async function fetchNegociacoes(): Promise<Negociacao[]> {
@@ -215,18 +218,23 @@ function calcularValorFinal(
   return Math.round(valorBruto * 100) / 100;
 }
 
-// Tipos de cobrança que NÃO sofrem multa/juros por enquanto — mesma regra de
-// app/agents/a2_cobranca/mensagens.py:TIPOS_SEM_ENCARGOS (pedido do cliente em
-// 30/10 e 11/11/2026: conta de água não é ajustada até existir a opção por
-// conta "aplicar multa e juros"). Manter as duas em sincronia; quando a opção
-// existir, este guard sai e a decisão passa a vir da própria charge.
+// Tipos de cobrança que, sem escolha registrada na charge, NÃO sofrem
+// multa/juros — mesma regra de app/agents/a2_cobranca/mensagens.py
+// (TIPOS_SEM_ENCARGOS e cobra_encargos). Pedido do cliente (30/10 e
+// 11/11/2026): conta de água só leva multa e juros se a equipe marcar a opção
+// naquela conta (charges.aplicar_encargos). Manter as duas em sincronia.
 const TIPOS_SEM_ENCARGOS = ["agua"];
+
+// aplicar_encargos true/false é a escolha da equipe; null cai no padrão do tipo.
+function cobraEncargos(tipo: string, aplicarEncargos: boolean | null): boolean {
+  return aplicarEncargos ?? !TIPOS_SEM_ENCARGOS.includes(tipo);
+}
 
 async function fetchAtrasadas(): Promise<Atraso[]> {
   const { data, error } = await supabase
     .from("charges")
     .select(
-      "id, contract_id, tipo, mes_referencia, valor_esperado, data_vencimento, dias_atraso, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp, multa_moratoria_percentual, juros_moratorio_mensal)",
+      "id, contract_id, tipo, mes_referencia, valor_esperado, data_vencimento, dias_atraso, aplicar_encargos, contracts(inquilino_nome, imovel_endereco, telefone_whatsapp, multa_moratoria_percentual, juros_moratorio_mensal)",
     )
     .eq("status", "atrasado")
     .order("dias_atraso", { ascending: false });
@@ -236,9 +244,12 @@ async function fetchAtrasadas(): Promise<Atraso[]> {
   return (data ?? []).map((row: any) => {
     const valorEsperado = Number(row.valor_esperado);
     const diasAtraso = Number(row.dias_atraso ?? 0);
+    const aplicaEncargos = cobraEncargos(row.tipo, row.aplicar_encargos ?? null);
     return {
       chargeId: row.id,
       contractId: row.contract_id,
+      tipo: row.tipo,
+      cobraEncargos: aplicaEncargos,
       inquilino: row.contracts?.inquilino_nome ?? "—",
       imovel: row.contracts?.imovel_endereco ?? "—",
       telefone: row.contracts?.telefone_whatsapp ?? null,
@@ -246,14 +257,14 @@ async function fetchAtrasadas(): Promise<Atraso[]> {
       dataVencimento: row.data_vencimento,
       diasAtraso,
       valorInicial: valorEsperado,
-      valorFinal: TIPOS_SEM_ENCARGOS.includes(row.tipo)
-        ? valorEsperado
-        : calcularValorFinal(
+      valorFinal: aplicaEncargos
+        ? calcularValorFinal(
             valorEsperado,
             diasAtraso,
             row.contracts?.multa_moratoria_percentual ?? null,
             row.contracts?.juros_moratorio_mensal ?? 0,
-          ),
+          )
+        : valorEsperado,
     };
   });
 }
@@ -299,6 +310,8 @@ function AtrasoCard({
   onChangeNovaDataVencimento,
   isPendingVencimento,
   onAlterarVencimento,
+  isPendingEncargos,
+  onAlterarEncargos,
 }: {
   n: Atraso;
   isPending: boolean;
@@ -309,6 +322,8 @@ function AtrasoCard({
   onChangeNovaDataVencimento: (data: string) => void;
   isPendingVencimento: boolean;
   onAlterarVencimento: () => void;
+  isPendingEncargos: boolean;
+  onAlterarEncargos: (aplicar: boolean) => void;
 }) {
   const valorInvalido = form.valorPago !== "" && Number(form.valorPago) <= 0;
 
@@ -401,6 +416,20 @@ function AtrasoCard({
             {isPendingVencimento ? "Alterando..." : "Alterar Vencimento"}
           </Button>
         </div>
+
+        {n.tipo === "agua" && (
+          <div className="flex items-center gap-2 pt-2 border-t">
+            <Checkbox
+              id={`encargos-${n.chargeId}`}
+              checked={n.cobraEncargos}
+              disabled={isPendingEncargos}
+              onCheckedChange={(v) => onAlterarEncargos(v === true)}
+            />
+            <Label htmlFor={`encargos-${n.chargeId}`} className="cursor-pointer">
+              Aplicar multa e juros a essa conta
+            </Label>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -814,6 +843,35 @@ export function CobrancasSection() {
     },
   });
 
+  // Liga/desliga multa e juros numa conta de água atrasada (charges.aplicar_encargos).
+  // O valor atualizado do card e o valor sugerido em "Marcar como Pago" vêm de
+  // valorFinal, que muda junto; por isso o valor já digitado nesse card é
+  // descartado ao salvar (senão ficaria com o valor da escolha anterior).
+  const alterarEncargosMutation = useMutation({
+    mutationFn: async ({ chargeId, aplicar }: { chargeId: string; aplicar: boolean }) => {
+      const { error } = await supabase
+        .from("charges")
+        .update({ aplicar_encargos: aplicar })
+        .eq("id", chargeId)
+        .eq("status", "atrasado");
+      if (error) throw error;
+    },
+    onSuccess: (_resultado, variables) => {
+      toast.success(
+        variables.aplicar ? "Multa e juros aplicados a essa conta" : "Multa e juros removidos dessa conta",
+      );
+      setPagamentoForms((prev) => {
+        const { [variables.chargeId]: _removido, ...resto } = prev;
+        return resto;
+      });
+      queryClient.invalidateQueries({ queryKey: ATRASADAS_QUERY_KEY });
+    },
+    onError: (error: Error) => {
+      console.error("Erro ao alterar multa e juros:", error);
+      toast.error(error.message || "Não foi possível alterar a opção. Tente novamente.");
+    },
+  });
+
   const handleAlterarVencimento = (n: Atraso) => {
     const novaData = getNovaDataVencimento(n);
     if (!novaData || novaData === n.dataVencimento) {
@@ -1104,6 +1162,13 @@ export function CobrancasSection() {
                 alterarVencimentoMutation.variables?.chargeId === n.chargeId
               }
               onAlterarVencimento={() => handleAlterarVencimento(n)}
+              isPendingEncargos={
+                alterarEncargosMutation.isPending &&
+                alterarEncargosMutation.variables?.chargeId === n.chargeId
+              }
+              onAlterarEncargos={(aplicar) =>
+                alterarEncargosMutation.mutate({ chargeId: n.chargeId, aplicar })
+              }
             />
           ))}
           {!isLoadingAtrasadas && atrasadasLeves.length === 0 && (
@@ -1166,6 +1231,13 @@ export function CobrancasSection() {
                 alterarVencimentoMutation.variables?.chargeId === n.chargeId
               }
               onAlterarVencimento={() => handleAlterarVencimento(n)}
+              isPendingEncargos={
+                alterarEncargosMutation.isPending &&
+                alterarEncargosMutation.variables?.chargeId === n.chargeId
+              }
+              onAlterarEncargos={(aplicar) =>
+                alterarEncargosMutation.mutate({ chargeId: n.chargeId, aplicar })
+              }
             />
           ))}
           {!isLoadingAtrasadas && atrasadasCriticas.length === 0 && (

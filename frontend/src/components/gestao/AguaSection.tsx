@@ -16,6 +16,7 @@ import { PageHeader } from "./PageHeader";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import {
@@ -311,6 +312,9 @@ export function ComprovanteAguaUpload() {
     contratoId: string;
     data: string;
   } | null>(null);
+  // "Aplicar multa e juros a essa conta?" — pedido do cliente. Começa
+  // desmarcado: sem marcar, o valor da conta não é ajustado em nenhum atraso.
+  const [aplicarEncargos, setAplicarEncargos] = useState(false);
 
   const { data: contratosAtivos = [] } = useQuery({
     queryKey: CONTRATOS_ATIVOS_QUERY_KEY,
@@ -356,6 +360,7 @@ export function ComprovanteAguaUpload() {
     setContratoSelecionadoId(null);
     setContaVencidaPendente(null);
     setDataVencimentoManual(null);
+    setAplicarEncargos(false);
   };
 
   const handleFile = (f: File | null) => {
@@ -469,6 +474,9 @@ export function ComprovanteAguaUpload() {
         mes_referencia: mesReferencia,
         valor_esperado: campos.valorTotal,
         data_vencimento: dataVencimento,
+        // Sempre explícito (true/false): NULL é só para o que foi lançado antes
+        // desta opção existir (ver Migration 028).
+        aplicar_encargos: aplicarEncargos,
         ...(opts.statusForcado
           ? { status: opts.statusForcado, dias_atraso: diasAtraso }
           : {}),
@@ -686,6 +694,24 @@ export function ComprovanteAguaUpload() {
                     )}
                   </p>
                 </FieldAgua>
+              </div>
+
+              <div className="flex items-start gap-2">
+                <Checkbox
+                  id="agua-aplicar-encargos"
+                  checked={aplicarEncargos}
+                  onCheckedChange={(v) => setAplicarEncargos(v === true)}
+                  className="mt-0.5"
+                />
+                <div className="space-y-1">
+                  <Label htmlFor="agua-aplicar-encargos" className="text-sm font-medium cursor-pointer">
+                    Aplicar multa e juros a essa conta?
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Marcado, se a conta atrasar, o valor cobrado leva a multa e os juros do contrato. Desmarcado,
+                    o valor não muda.
+                  </p>
+                </div>
               </div>
 
               <div className="space-y-3">
