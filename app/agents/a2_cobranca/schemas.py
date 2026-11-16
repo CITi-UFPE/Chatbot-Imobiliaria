@@ -35,6 +35,8 @@ class ChargeAtiva(BaseModel):
     dias_atraso: int
     status: StatusCharge
     mensagem_estagio: Optional[EstagioCobranca] = None
+    # NULL = padrão do tipo (água sem encargos, o resto com); ver cobra_encargos.
+    aplicar_encargos: Optional[bool] = None
 
 
 class DadosCobrancaContrato(BaseModel):

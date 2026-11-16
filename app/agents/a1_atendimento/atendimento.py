@@ -50,7 +50,7 @@ from app.agents.a1_atendimento.schemas import (
     StatusCobrancaContrato,
 )
 from app.tools.calculo_reajuste import INDICES_COM_CALCULO_AUTOMATICO, proximo_aniversario_contrato
-from app.agents.a2_cobranca.mensagens import TIPOS_SEM_ENCARGOS, calcular_encargos
+from app.agents.a2_cobranca.mensagens import calcular_encargos, cobra_encargos
 from app.agents.a5_escalonamento import (
     AvaliacaoEscalonamento,
     avaliar_escalonamento,
@@ -410,7 +410,9 @@ def _adicionar_encargos_charges_atrasadas(client, contract_id: str, charges_aber
     atrasadas = [
         c
         for c in charges_abertas
-        if c["status"] == "atrasado" and c["dias_atraso"] > 0 and c["tipo"] not in TIPOS_SEM_ENCARGOS
+        if c["status"] == "atrasado"
+        and c["dias_atraso"] > 0
+        and cobra_encargos(c["tipo"], c.get("aplicar_encargos"))
     ]
     if not atrasadas:
         return

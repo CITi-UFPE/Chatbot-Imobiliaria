@@ -306,6 +306,37 @@ def test_charge_de_agua_atrasada_nao_recebe_encargos():
     assert abertas["c-aluguel"]["valor_atualizado"] == 4431.87
 
 
+def test_agua_atrasada_com_encargos_marcados_recebe_valor_atualizado():
+    """Item 4 do cliente: a equipe marcou "aplicar multa e juros" nessa conta."""
+    agua = {
+        **_charge_aberta("atrasado", 32, "c-agua"),
+        "tipo": "agua",
+        "valor_esperado": 300.0,
+        "aplicar_encargos": True,
+    }
+    client = _client_fake_por_rpc(
+        {"charges_abertas": [agua], "charges_pagas_ultimos_30_dias": []},
+        {"multa_moratoria_percentual": 0.02, "juros_moratorio_mensal": 0.01},
+    )
+
+    charge = _executar_com(client)["charges_abertas"][0]
+
+    assert charge["valor_multa"] == 6.0
+    assert charge["valor_atualizado"] == 309.2
+
+
+def test_aluguel_atrasado_com_encargos_desmarcados_nao_recebe_encargos():
+    aluguel = {**_charge_aberta("atrasado", 32, "c-aluguel"), "aplicar_encargos": False}
+    client = _client_fake_por_rpc(
+        {"charges_abertas": [aluguel], "charges_pagas_ultimos_30_dias": []},
+        {"multa_moratoria_percentual": 0.02, "juros_moratorio_mensal": 0.01},
+    )
+
+    charge = _executar_com(client)["charges_abertas"][0]
+
+    assert "valor_atualizado" not in charge
+
+
 def test_so_agua_atrasada_nao_busca_dados_do_contrato():
     client = _client_fake_por_rpc(
         {
