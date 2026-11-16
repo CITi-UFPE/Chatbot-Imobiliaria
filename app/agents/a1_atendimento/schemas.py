@@ -142,6 +142,9 @@ class ChargeEmAberto(BaseModel):
     data_vencimento: str
     dias_atraso: int
     status: StatusCharge
+    # NULL = padrão do tipo (água sem multa/juros, aluguel com); a RPC passa a
+    # devolver a coluna na Migration 028, e extra="forbid" exige o campo aqui.
+    aplicar_encargos: bool | None = None
 
 
 class ChargePagaRecente(BaseModel):

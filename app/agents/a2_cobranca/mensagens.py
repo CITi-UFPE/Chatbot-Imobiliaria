@@ -60,11 +60,20 @@ def calcular_encargos(
     return round(valor_multa, 2), round(valor_juros, 2), round(valor_total, 2)
 
 
-# Tipos de cobrança que NÃO sofrem multa/juros por enquanto. Pedido do cliente
-# (30/10 e 11/11/2026): conta de água não é ajustada até existir a opção por
-# conta "aplicar multa e juros". Quando ela entrar, este guard sai e a decisão
-# passa a vir da própria charge.
+# Tipos de cobrança que, por padrão, NÃO sofrem multa/juros. Pedido do cliente
+# (30/10 e 11/11/2026): conta de água só é ajustada se a equipe marcar "aplicar
+# multa e juros" naquela conta (charges.aplicar_encargos). Sem escolha
+# registrada (NULL), vale o padrão do tipo.
 TIPOS_SEM_ENCARGOS: frozenset[str] = frozenset({"agua"})
+
+
+def cobra_encargos(tipo: str, aplicar_encargos: bool | None) -> bool:
+    """Decide se multa/juros valem pra uma cobrança: a escolha explícita da
+    charge (aplicar_encargos) manda; NULL cai no padrão do tipo. Mesma regra
+    de frontend/src/components/gestao/CobrancasSection.tsx."""
+    if aplicar_encargos is not None:
+        return aplicar_encargos
+    return tipo not in TIPOS_SEM_ENCARGOS
 
 
 def encargos_da_cobranca(
@@ -73,11 +82,13 @@ def encargos_da_cobranca(
     dias_atraso: int,
     multa_moratoria_percentual: float | None,
     juros_moratorio_mensal: float,
+    aplicar_encargos: bool | None = None,
 ) -> tuple[float, float, float]:
-    """calcular_encargos, exceto pra tipos em TIPOS_SEM_ENCARGOS: multa e juros
-    zerados e total igual ao valor original. Todo ponto que mostra valor
-    atualizado de uma cobrança deve passar por aqui, não por calcular_encargos."""
-    if tipo in TIPOS_SEM_ENCARGOS:
+    """calcular_encargos, exceto quando a cobrança não cobra encargos
+    (cobra_encargos): multa e juros zerados e total igual ao valor original.
+    Todo ponto que mostra valor atualizado de uma cobrança deve passar por aqui,
+    não por calcular_encargos."""
+    if not cobra_encargos(tipo, aplicar_encargos):
         return 0.0, 0.0, round(valor_esperado, 2)
     return calcular_encargos(valor_esperado, dias_atraso, multa_moratoria_percentual, juros_moratorio_mensal)
 
@@ -181,10 +192,11 @@ def _montar_mensagem_conta(
         dias_atraso,
         dados.multa_moratoria_percentual,
         dados.juros_moratorio_mensal,
+        charge.aplicar_encargos,
     )
     # Sem encargos o valor é o original — dizer "atualizado com encargos"
     # seria afirmar uma cobrança extra que não existe.
-    sem_encargos = charge.tipo in TIPOS_SEM_ENCARGOS
+    sem_encargos = not cobra_encargos(charge.tipo, charge.aplicar_encargos)
     rotulo_valor = "Valor" if sem_encargos else "Valor atualizado"
     rotulo_valor_d5 = "Valor" if sem_encargos else "Valor atualizado com encargos"
 
@@ -299,6 +311,7 @@ def montar_template_cobranca(
         dias_atraso,
         dados.multa_moratoria_percentual,
         dados.juros_moratorio_mensal,
+        charge.aplicar_encargos,
     )
 
     if estagio in ("d+5", "d+10"):
